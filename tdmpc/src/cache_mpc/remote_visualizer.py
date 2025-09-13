@@ -23,7 +23,7 @@ def setup_remote_matplotlib():
 class RemoteCacheMPCVisualizer:
     """专为远程服务器设计的可视化工具"""
     
-    def __init__(self, horizon, action_dim, output_dir="./visualization_output"):
+    def __init__(self, horizon, action_dim, output_dir="./png"):
         # 确保使用非交互后端
         matplotlib.use('Agg')
         
