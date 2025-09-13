@@ -1,6 +1,9 @@
 # Log files
 logs/
 
+# Test files
+tests/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
