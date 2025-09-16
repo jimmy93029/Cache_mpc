@@ -14,7 +14,7 @@ class CartpoleTrajectoryBundleVisualizer:
         self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
         
 
-    def load_cartpole_data(self, episode_dir):
+    def load_data(self, episode_dir):
         """加载cartpole CSV数据"""
 
         episode_path = Path(episode_dir)
@@ -455,7 +455,7 @@ def run_cartpole_visualization(episode_dir, action_dim_to_plot=0):
     visualizer = CartpoleTrajectoryBundleVisualizer()
     
     # 加载数据
-    trajectories_data = visualizer.load_cartpole_data(episode_dir)
+    trajectories_data = visualizer.load_data(episode_dir)
     
     if not trajectories_data:
         print("未找到有效的轨迹数据")
