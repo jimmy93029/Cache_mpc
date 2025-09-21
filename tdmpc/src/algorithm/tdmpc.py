@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
-from cache_mpc.helper import save_planned_actions
+from cache_mpc.helper import save_planned_actions, store_trajectory, find_matching_action 
 
 
 class TOLD(nn.Module):
@@ -63,6 +63,11 @@ class TDMPC():
 		self.model.eval()
 		self.model_target.eval()
 
+		# Cache-mpc variable
+		self.trajectory_step = 1 
+		self.trajectory_cache = {} 
+		self.reuse_interval = 5
+
 	def state_dict(self):
 		"""Retrieve state dict of TOLD model, including slow-moving target network."""
 		return {'model': self.model.state_dict(),
@@ -82,15 +87,25 @@ class TDMPC():
 	def estimate_value(self, z, actions, horizon):
 		"""Estimate value of a trajectory starting at latent state z and executing given actions."""
 		G, discount = 0, 1
+		states = [z.clone()] 
+
 		for t in range(horizon):
 			z, reward = self.model.next(z, actions[t])
 			G += discount * reward
 			discount *= self.cfg.discount
+			states.append(z.clone())
 		G += discount * torch.min(*self.model.Q(z, self.model.pi(z, self.cfg.min_std)))
-		return G
+
+		return G, states
+
+	def _state_to_key(self, state):
+		"""将状态转换为哈希键"""
+		# 简单的量化方法，可以根据需要调整精度
+		quantized = np.round(state.cpu().numpy() / 0.1) * 0.1
+		return tuple(quantized.flatten())
 
 	@torch.no_grad()
-	def plan(self, obs, eval_mode=False, step=None, t0=True, test_mode=False, time=None, test_dir=None):
+	def plan(self, obs, eval_mode=False, step=None, t0=True, store_traj=False, time=None, test_dir=None, reuse=False):
 		"""
 		Plan next action using TD-MPC inference.
 		obs: raw input observation.
@@ -102,8 +117,18 @@ class TDMPC():
 		if step < self.cfg.seed_steps and not eval_mode:
 			return torch.empty(self.cfg.action_dim, dtype=torch.float32, device=self.device).uniform_(-1, 1)
 
-		# Sample policy trajectories
+		# Reuse Traj
 		obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+		current_latent = self.model.h(obs)
+		if (reuse and len(self.trajectory_cache) > 0 and 
+			time is not None and time % self.reuse_interval == 0):
+			a = find_matching_action(current_latent, self.trajectory_cache, 
+								self.trajectory_step, 0.1, self.device)
+			if a is not None:
+				self.trajectory_step += 1
+				return a
+
+		# Sample policy trajectories
 		horizon = int(min(self.cfg.horizon, h.linear_schedule(self.cfg.horizon_schedule, step)))
 		num_pi_trajs = int(self.cfg.mixture_coef * self.cfg.num_samples)
 		if num_pi_trajs > 0:
@@ -117,7 +142,6 @@ class TDMPC():
 		z = self.model.h(obs).repeat(self.cfg.num_samples+num_pi_trajs, 1)
 		mean = torch.zeros(horizon, self.cfg.action_dim, device=self.device)
 		std = 2*torch.ones(horizon, self.cfg.action_dim, device=self.device)
-		value = None
 		if not t0 and hasattr(self, '_prev_mean'):
 			mean[:-1] = self._prev_mean[1:]
 
@@ -129,13 +153,23 @@ class TDMPC():
 				actions = torch.cat([actions, pi_actions], dim=1)
 
 			# Compute elite actions
-			value = self.estimate_value(z, actions, horizon).nan_to_num_(0)
-			elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
-			elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs]
+			values, states = self.estimate_value(z, actions, horizon)
+			values = values.nan_to_num_(0)
+			elite_idxs = torch.topk(values.squeeze(1), self.cfg.num_elites, dim=0).indices
+			elite_values, elite_actions = values[elite_idxs], actions[:, elite_idxs]
+			
+			# Extract elite states correctly
+			elite_states = []
+			for t in range(len(states)):  # for each time step
+				# 选择对应时间步的精英轨迹，elite_idxs 选取精英轨迹 
+				elite_states.append(states[t][elite_idxs])
+
+			# 转换成 [num_trajectories, horizon] 的格式
+			elite_states = torch.stack(elite_states, dim=1)  # [num_trajectories, horizon, state_dim]
 
 			# Update parameters
-			max_value = elite_value.max(0)[0]
-			score = torch.exp(self.cfg.temperature*(elite_value - max_value))
+			max_value = elite_values.max(0)[0]
+			score = torch.exp(self.cfg.temperature*(elite_values - max_value))
 			score /= score.sum(0)
 			_mean = torch.sum(score.unsqueeze(0) * elite_actions, dim=1) / (score.sum(0) + 1e-9)
 			_std = torch.sqrt(torch.sum(score.unsqueeze(0) * (elite_actions - _mean.unsqueeze(1)) ** 2, dim=1) / (score.sum(0) + 1e-9))
@@ -143,9 +177,12 @@ class TDMPC():
 			mean, std = self.cfg.momentum * mean + (1 - self.cfg.momentum) * _mean, _std
 
 		# Save planned actions for Cache MPC analysis
-		if test_mode and test_dir is not None and time is not None:
-			save_planned_actions(self.cfg, elite_actions, elite_value, score, time, horizon, test_dir)
-
+		if store_traj and test_dir is not None and time is not None:
+			save_planned_actions(self.cfg, elite_actions, elite_values, score, time, horizon, test_dir)
+		if reuse:
+			store_trajectory(elite_actions, elite_states, elite_values, time, self.trajectory_cache, self._state_to_key)
+			self.trajectory_step = 1 
+			
 		# Outputs
 		score = score.squeeze(1).cpu().numpy()
 		actions = elite_actions[:, np.random.choice(np.arange(score.shape[0]), p=score)]
