@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
-from cache_mpc.helper import save_planned_actions, store_trajectory, find_matching_action 
+from cache_mpc.helper import save_planned_actions, store_trajectory, find_matching_action, find_matching_action_with_threshold
 
 
 class TOLD(nn.Module):
@@ -66,7 +66,7 @@ class TDMPC():
 		# Cache-mpc variable
 		self.trajectory_step = 1 
 		self.trajectory_cache = {} 
-		self.reuse_interval = 5
+		self.reuse_interval = 3
 
 	def state_dict(self):
 		"""Retrieve state dict of TOLD model, including slow-moving target network."""
@@ -122,10 +122,10 @@ class TDMPC():
 		current_latent = self.model.h(obs)
 		if (reuse and len(self.trajectory_cache) > 0 and 
 			time is not None and time % self.reuse_interval == 0):
-			a = find_matching_action(current_latent, self.trajectory_cache, 
-								self.trajectory_step, 0.1, self.device)
+			a = find_matching_action_with_threshold(current_state, self.cfg.task, self.trajectory_cache, 
+								self.trajectory_step, self.device)
 			if a is not None:
-				self.trajectory_step += 1
+				print(f"Cache hit: get a = {a}")
 				return a
 
 		# Sample policy trajectories
@@ -181,7 +181,6 @@ class TDMPC():
 			save_planned_actions(self.cfg, elite_actions, elite_values, score, time, horizon, test_dir)
 		if reuse:
 			store_trajectory(elite_actions, elite_states, elite_values, time, self.trajectory_cache, self._state_to_key)
-			self.trajectory_step = 1 
 			
 		# Outputs
 		score = score.squeeze(1).cpu().numpy()

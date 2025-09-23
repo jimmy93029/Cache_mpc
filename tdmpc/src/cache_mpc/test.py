@@ -6,7 +6,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 os.environ['MUJOCO_GL'] = 'egl'
 import torch
-torch.cuda.set_device(3)
+torch.cuda.set_device(1)
+print(f"Currently using device: {torch.cuda.current_device()}")
+print(f"Device name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
 import numpy as np
 import gym
 import time
@@ -85,10 +87,10 @@ def test_agent(env, agent, num_episodes, step, test_dir):
                 eval_mode=True,      # Use deterministic policy
                 step=step, 
                 t0=(t == 0),
-                store_traj=False,      # Enable CSV output
+                store_traj=True,      # Enable CSV output
                 time=t,                 # Current time step
                 test_dir=episode_dir,  # Directory to save CSV files
-                reuse=False
+                reuse=True
             )
             
             # Execute action in environment

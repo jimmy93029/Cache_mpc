@@ -4,6 +4,7 @@ import os
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 os.environ['MUJOCO_GL'] = 'egl'
 import torch
+torch.cuda.set_device(2)
 import numpy as np
 import gym
 gym.logger.set_level(40)
