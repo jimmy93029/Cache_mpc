@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
-from cache_mpc.helper import save_planned_actions, store_trajectory, find_matching_action, find_matching_action_with_threshold
+from cache_mpc.helper import save_planned_actions, store_trajectory
 
 
 class TOLD(nn.Module):
@@ -64,9 +64,20 @@ class TDMPC():
 		self.model_target.eval()
 
 		# Cache-mpc variable
+		self.store_traj = False
+		self.reuse = False
 		self.trajectory_step = 1 
 		self.trajectory_cache = {} 
-		self.reuse_interval = 3
+		self.reuse_interval = 2
+		self.matching_fn = None
+
+	def set_reuse_info(self, store_traj, reuse, reuse_interval, matching_fn):
+		"""Set reuse configuration for trajectory caching."""
+		self.store_traj = store_traj
+		self.reuse = reuse
+		self.reuse_interval = reuse_interval
+		self.matching_fn = matching_fn
+		self.trajectory_step = 1 
 
 	def state_dict(self):
 		"""Retrieve state dict of TOLD model, including slow-moving target network."""
@@ -105,7 +116,7 @@ class TDMPC():
 		return tuple(quantized.flatten())
 
 	@torch.no_grad()
-	def plan(self, obs, eval_mode=False, step=None, t0=True, store_traj=False, time=None, test_dir=None, reuse=False):
+	def plan(self, obs, eval_mode=False, step=None, t0=True, time=None, test_dir=None):
 		"""
 		Plan next action using TD-MPC inference.
 		obs: raw input observation.
@@ -119,13 +130,13 @@ class TDMPC():
 
 		# Reuse Traj
 		obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-		current_latent = self.model.h(obs)
-		if (reuse and len(self.trajectory_cache) > 0 and 
-			time is not None and time % self.reuse_interval == 0):
-			a = find_matching_action_with_threshold(current_state, self.cfg.task, self.trajectory_cache, 
-								self.trajectory_step, self.device)
+		current_state = self.model.h(obs)
+		if (self.reuse and len(self.trajectory_cache) > 0 and 
+			time is not None and time % self.reuse_interval == 0 and
+			self.matching_fn is not None):
+			a = self.matching_fn(current_state, self.cfg.task, self.trajectory_cache, 
+			 					self.trajectory_step, self.device)
 			if a is not None:
-				print(f"Cache hit: get a = {a}")
 				return a
 
 		# Sample policy trajectories
@@ -177,9 +188,9 @@ class TDMPC():
 			mean, std = self.cfg.momentum * mean + (1 - self.cfg.momentum) * _mean, _std
 
 		# Save planned actions for Cache MPC analysis
-		if store_traj and test_dir is not None and time is not None:
+		if self.store_traj and test_dir is not None and time is not None:
 			save_planned_actions(self.cfg, elite_actions, elite_values, score, time, horizon, test_dir)
-		if reuse:
+		if self.reuse:
 			store_trajectory(elite_actions, elite_states, elite_values, time, self.trajectory_cache, self._state_to_key)
 			
 		# Outputs
