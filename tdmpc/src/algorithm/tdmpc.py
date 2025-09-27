@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
-from cache_mpc.helper import save_planned_actions, store_trajectory
+from cache_mpc.helper import save_planned_actions, save_planned_states, store_trajectory, can_reuse
 
 
 class TOLD(nn.Module):
@@ -67,7 +67,7 @@ class TDMPC():
 		self.store_traj = False
 		self.reuse = False
 		self.trajectory_step = 1 
-		self.trajectory_cache = {} 
+		self.trajectory_cache = []
 		self.reuse_interval = 2
 		self.matching_fn = None
 
@@ -109,12 +109,6 @@ class TDMPC():
 
 		return G, states
 
-	def _state_to_key(self, state):
-		"""将状态转换为哈希键"""
-		# 简单的量化方法，可以根据需要调整精度
-		quantized = np.round(state.cpu().numpy() / 0.1) * 0.1
-		return tuple(quantized.flatten())
-
 	@torch.no_grad()
 	def plan(self, obs, eval_mode=False, step=None, t0=True, time=None, test_dir=None):
 		"""
@@ -131,9 +125,7 @@ class TDMPC():
 		# Reuse Traj
 		obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
 		current_state = self.model.h(obs)
-		if (self.reuse and len(self.trajectory_cache) > 0 and 
-			time is not None and time % self.reuse_interval == 0 and
-			self.matching_fn is not None):
+		if (can_reuse(self.cfg.matching_fn, self.reuse, len(self.trajectory_cache), time, self.reuse_interval, self.matching_fn)):
 			a = self.matching_fn(current_state, self.cfg.task, self.trajectory_cache, 
 			 					self.trajectory_step, self.device)
 			if a is not None:
@@ -190,8 +182,9 @@ class TDMPC():
 		# Save planned actions for Cache MPC analysis
 		if self.store_traj and test_dir is not None and time is not None:
 			save_planned_actions(self.cfg, elite_actions, elite_values, score, time, horizon, test_dir)
+			save_planned_states(self.cfg, elite_states, elite_values, score, time, horizon, test_dir)
 		if self.reuse:
-			store_trajectory(elite_actions, elite_states, elite_values, time, self.trajectory_cache, self._state_to_key)
+			store_trajectory(elite_actions, elite_states, elite_values, time, self.trajectory_cache)
 			
 		# Outputs
 		score = score.squeeze(1).cpu().numpy()
