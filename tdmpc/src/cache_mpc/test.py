@@ -172,7 +172,7 @@ def main():
         test_dir=test_dir
     )
     test_time = time.time() - start_time
-    
+
     # Save test summary
     summary_file = test_dir / 'test_summary.txt'
     with open(summary_file, 'w') as f:
@@ -183,6 +183,10 @@ def main():
         f.write(f"Seed: {cfg.seed}\n")
         f.write(f"Model path: {model_path}\n")
         f.write(f"Number of episodes: {num_test_episodes}\n")
+        f.write(f"store_traj: {cfg.store_traj}\n")
+        f.write(f"reuse: {cfg.reuse}\n")
+        f.write(f"reuse_interval: {cfg.reuse_interval}\n")
+        f.write(f"matching_fn: {cfg.matching_fn}\n")
         f.write(f"Test time: {test_time:.2f} seconds\n")
         f.write(f"Average reward: {avg_reward:.2f}\n")
         f.write(f"Episode rewards: {episode_rewards}\n")

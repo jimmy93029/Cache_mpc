@@ -70,6 +70,8 @@ For example:
 - Model: `tdmpc/logs/cartpole-swingup/state/cartpole-swingup-horizon5/1/models/model.pt`
 - Test command: `task=cartpole-swingup exp_name=cartpole-swingup-horizon5`
 
+Make sure that the exp name match the name of the training dir, logs
+
 ## Experimental Configurations
 
 ### Configuration Examples

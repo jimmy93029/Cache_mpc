@@ -11,6 +11,7 @@ def save_planned_actions(cfg, elite_actions, elite_value, score, time, horizon, 
     
     # Prepare data for CSV
     data = []
+    all_headers = set()  # Set to track all unique headers
     
     actions_cpu = elite_actions.cpu().numpy()  # shape: [horizon, num_elites, action_dim]
     value_cpu = elite_value.squeeze().cpu().numpy()  # shape: [num_elites]
@@ -23,44 +24,49 @@ def save_planned_actions(cfg, elite_actions, elite_value, score, time, horizon, 
         for h in range(horizon):
             time_step = time + h + 1
             for action_dim in range(cfg.action_dim):
-                row_data[f't{time_step}_action{action_dim}'] = actions_cpu[h, i, action_dim]
+                header = f't{time_step}_action{action_dim}'
+                row_data[header] = actions_cpu[h, i, action_dim]
+                all_headers.add(header)
         
         # Add value and score
         row_data['value'] = value_cpu[i]
         row_data['score'] = score_cpu[i]
+        all_headers.add('value')
+        all_headers.add('score')
         
         data.append(row_data)
     
-    # Create DataFrame and save
+    # Convert to DataFrame
     df = pd.DataFrame(data)
+    
+    # Ensure all rows have the same columns (align to headers)
+    for header in all_headers:
+        if header not in df.columns:
+            df[header] = np.nan  # Add missing columns with NaN values
+    
+    # Reorder columns according to the headers
+    df = df[sorted(all_headers)]
+    
+    # Save the DataFrame to CSV
     filename = f"planned-actions-time{time}.csv"
     filepath = os.path.join(test_dir, filename)
     df.to_csv(filepath, index=False)
 
 
 def save_planned_states(cfg, elite_states, elite_value, score, time, horizon, test_dir):
-    """Save planned states to CSV file.
-    
-    Args:
-        cfg: Configuration object (state_dim will be inferred from tensor if not available)
-        elite_states: Tensor of shape [num_trajectories, horizon, state_dim]
-        elite_value: Tensor of shape [num_trajectories] or [num_trajectories, 1]
-        score: Tensor of shape [num_trajectories] or [num_trajectories, 1]
-        time: Current time step
-        horizon: Planning horizon
-        test_dir: Directory to save the CSV file
-    """
+    """Save planned states to CSV file."""
     # Ensure test directory exists
     os.makedirs(test_dir, exist_ok=True)
     
     # Prepare data for CSV
     data = []
+    all_headers = set()  # Set to track all unique headers
     
     states_cpu = elite_states.cpu().numpy()  # shape: [num_trajectories, horizon, state_dim]
     value_cpu = elite_value.squeeze().cpu().numpy()  # shape: [num_trajectories]
     score_cpu = score.squeeze().cpu().numpy()  # shape: [num_trajectories]
     
-    # 从张量形状推断state_dim，避免访问cfg.state_dim
+    # Infer state_dim from the shape of elite_states tensor
     actual_state_dim = states_cpu.shape[2]
     
     for i in range(states_cpu.shape[0]):  # for each elite trajectory
@@ -69,25 +75,35 @@ def save_planned_states(cfg, elite_states, elite_value, score, time, horizon, te
         # Add time steps (t+1 to t+horizon)
         for h in range(horizon):
             time_step = time + h + 1
-            for state_dim in range(actual_state_dim):  # 使用推断的维度
-                row_data[f't{time_step}_state{state_dim}'] = states_cpu[i, h, state_dim]
+            for state_dim in range(actual_state_dim):
+                header = f't{time_step}_state{state_dim}'
+                row_data[header] = states_cpu[i, h, state_dim]
+                all_headers.add(header)
         
         # Add value and score
         row_data['value'] = value_cpu[i]
         row_data['score'] = score_cpu[i]
+        all_headers.add('value')
+        all_headers.add('score')
         
         data.append(row_data)
     
-    # Create DataFrame and save
+    # Convert to DataFrame
     df = pd.DataFrame(data)
+    
+    # Ensure all rows have the same columns (align to headers)
+    for header in all_headers:
+        if header not in df.columns:
+            df[header] = np.nan  # Add missing columns with NaN values
+    
+    # Reorder columns according to the headers
+    df = df[sorted(all_headers)]
+    
+    # Save the DataFrame to CSV
     filename = f"planned-states-time{time}.csv"
     filepath = os.path.join(test_dir, filename)
     df.to_csv(filepath, index=False)
 
-
-
-import torch
-import numpy as np
 
 def store_trajectory(actions, states, values, time, trajectory_cache):
     """
@@ -146,18 +162,18 @@ def find_matching_action_with_threshold(current_state, env_type, trajectory_cach
         env_base = env_type.split('-')[0] if '-' in env_type else env_type
         
         base_thresholds = {
-            'cartpole': 1,     # 4D state space
-            'acrobot': 1,      # 6D state space
-            'humanoid': 0.05,    # 108D state space, stricter
-            'walker': 0.08,      # 17D state space
-            'cheetah': 0.08,     # 17D state space
-            'cup': 0.1,          # 8D state space
-            'dog': 1,         # High-dimensional state space
-            'finger': 0.1,       # 9D state space
-            'fish': 0.08,        # 24D state space
-            'hopper': 0.08,      # 15D state space
-            'quadruped': 0.06,   # High-dimensional state space
-            'reacher': 0.1,      # 4-6D state space
+            'cartpole': 5,     # 4D state space
+            'acrobot': 5,      # 6D state space
+            'humanoid': 5,    # 108D state space, stricter
+            'walker': 5,      # 17D state space
+            'cheetah': 15,     # 17D state space
+            'cup': 5,          # 8D state space
+            'dog': 5,         # High-dimensional state space
+            'finger': 5,       # 9D state space
+            'fish': 5,        # 24D state space
+            'hopper': 5,      # 15D state space
+            'quadruped': 5,   # High-dimensional state space
+            'reacher': 5,      # 4-6D state space
         }
         
         # Base threshold
@@ -196,6 +212,7 @@ def find_matching_action_with_threshold(current_state, env_type, trajectory_cach
                                 dtype=torch.float32, device=device)
             print(f"选择轨迹 #{best_traj_idx}, "
                   f"距离: {min_distance:.4f}")
+            trajectory_cache.clear()
             return action
     
     return None
