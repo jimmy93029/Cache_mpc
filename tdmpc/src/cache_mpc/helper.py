@@ -1,7 +1,16 @@
-import pandas as pd
 import os
+import re
 import numpy as np
-import torch
+import pandas as pd
+
+
+def natural_sort_key(s):
+    """
+    Sort key function for natural sorting of strings with numbers.
+    Converts 't164_action10' to be sorted after 't164_action9'.
+    """
+    return [int(text) if text.isdigit() else text.lower() 
+            for text in re.split('([0-9]+)', s)]
 
 
 def save_planned_actions(cfg, elite_actions, elite_value, score, time, horizon, test_dir):
@@ -21,8 +30,8 @@ def save_planned_actions(cfg, elite_actions, elite_value, score, time, horizon, 
         row_data = {}
         
         # Add time steps (t+1 to t+horizon)
-        for h in range(horizon):
-            time_step = time + h + 1
+        for h in range(actions_cpu.shape[0]):
+            time_step = time + h
             for action_dim in range(cfg.action_dim):
                 header = f't{time_step}_action{action_dim}'
                 row_data[header] = actions_cpu[h, i, action_dim]
@@ -44,8 +53,11 @@ def save_planned_actions(cfg, elite_actions, elite_value, score, time, horizon, 
         if header not in df.columns:
             df[header] = np.nan  # Add missing columns with NaN values
     
-    # Reorder columns according to the headers
-    df = df[sorted(all_headers)]
+    # Reorder columns with natural sorting, but keep score and value at the end
+    action_headers = sorted([h for h in all_headers if h not in ['value', 'score']], 
+                           key=natural_sort_key)
+    column_order = action_headers + ['value', 'score']
+    df = df[column_order]
     
     # Save the DataFrame to CSV
     filename = f"planned-actions-time{time}.csv"
@@ -73,8 +85,8 @@ def save_planned_states(cfg, elite_states, elite_value, score, time, horizon, te
         row_data = {}
         
         # Add time steps (t+1 to t+horizon)
-        for h in range(horizon):
-            time_step = time + h + 1
+        for h in range(states_cpu.shape[1]):
+            time_step = time + h 
             for state_dim in range(actual_state_dim):
                 header = f't{time_step}_state{state_dim}'
                 row_data[header] = states_cpu[i, h, state_dim]
@@ -96,8 +108,11 @@ def save_planned_states(cfg, elite_states, elite_value, score, time, horizon, te
         if header not in df.columns:
             df[header] = np.nan  # Add missing columns with NaN values
     
-    # Reorder columns according to the headers
-    df = df[sorted(all_headers)]
+    # Reorder columns with natural sorting, but keep score and value at the end
+    state_headers = sorted([h for h in all_headers if h not in ['value', 'score']], 
+                          key=natural_sort_key)
+    column_order = state_headers + ['value', 'score']
+    df = df[column_order]
     
     # Save the DataFrame to CSV
     filename = f"planned-states-time{time}.csv"
@@ -164,8 +179,8 @@ def find_matching_action_with_threshold(current_state, env_type, trajectory_cach
         base_thresholds = {
             'cartpole': 5,     # 4D state space
             'acrobot': 5,      # 6D state space
-            'humanoid': 5,    # 108D state space, stricter
-            'walker': 5,      # 17D state space
+            'humanoid': 100,    # 108D state space, stricter
+            'walker': 15,      # 17D state space
             'cheetah': 15,     # 17D state space
             'cup': 5,          # 8D state space
             'dog': 5,         # High-dimensional state space
@@ -266,10 +281,10 @@ def find_matching_action(current_state, env_type, trajectory_cache, step_in_traj
 
 def can_reuse(mathcing_fn_name, reuse, length, time, reuse_interval, matching_fn):
     function_map = {
-        "find_matching_action": reuse and length > 0 and 
-			time is not None and time % reuse_interval == 0 and
+        "find_matching_action": reuse and length > 0 
+            and time > 0 and time % reuse_interval == 0 and
 			matching_fn is not None,
         "find_matching_action_with_threshold": reuse and length > 0 
-			and matching_fn is not None 
+			and time > 0 and matching_fn is not None 
     }
     return function_map.get(mathcing_fn_name, False)

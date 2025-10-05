@@ -303,7 +303,7 @@ def main():
     """
     使用示例 - 展示如何創建交互式3D軌跡圖
     """
-    episode_dir = "/media/HDD7/jimmywu/cache-mpc/tdmpc/tests/humanoid-run/humanoid-run-horizon5/1/episode_5"
+    episode_dir = "/media/HDD7/jimmywu/cache-mpc/tdmpc/tests/cheetah-run/cheetah-run/6_no_reuse_to_check_average_reward/episode_1"
     trajectories_data = load_data(episode_dir)
 
     # 創建可視化器
