@@ -51,24 +51,30 @@ Test a trained model with trajectory reuse:
 
 ```bash
 # Basic testing with model auto-loading
-nohup python -m src.cache_mpc.test task=humanoid-run exp_name=humanoid-run horizon=5 reuse=true > tests/humanoid-run-reuse.log &
+nohup python -m src.cache_mpc.test task=humanoid-run reuse=true reuse_interval=2  store_traj=false > tests/humanoid-run-reuse.log &
 
 # Testing with specific cache configuration
-nohup python -m src.cache_mpc.test task=dog-run exp_name=dog-run horizon=5 reuse=true reuse_interval=1 matching_fn=find_matching_action_with_threshold > tests/dog-run.log &
+nohup python -m src.cache_mpc.test task=dog-run reuse=true store_traj=false matching_fn=find_matching_action_with_threshold > tests/dog-run.log &
 
-# Baseline testing (no reuse)
-nohup python -m src.cache_mpc.test task=cartpole-swingup exp_name=cartpole-baseline horizon=5 reuse=false > tests/cartpole-baseline.log &
+# Baseline testing (no reuse) 
+nohup python -m src.cache_mpc.test task=cartpole-swingup store_traj=false  reuse=false > tests/cartpole-baseline.log &
+```
+
+### Prepare Guide Cache (guideCache.py)
+Prepare guide cache
+```bash
+nohup python -m src.cache_mpc.guideCache task=humanoid-run > logs/guide-humanoid-run.log &
 ```
 
 ## Model Path Structure
 The system automatically loads trained models from:
 ```
-tdmpc/logs/{task}/{modality}/{exp_name}/{seed}/models/model.pt
+tdmpc/logs/{task}/{modality}/{seed}/models/model.pt
 ```
 
 For example:
-- Model: `tdmpc/logs/cartpole-swingup/state/cartpole-swingup-horizon5/1/models/model.pt`
-- Test command: `task=cartpole-swingup exp_name=cartpole-swingup-horizon5`
+- Model: `tdmpc/logs/cartpole-swingup/state/1/models/model.pt`
+- Test command: `task=cartpole-swingup`
 
 Make sure that the exp name match the name of the training dir, logs
 
@@ -89,7 +95,7 @@ matching_fn: find_matching_action
 
 ### Test Results
 ```
-tests/{task}/{exp_name}/{test_number}/
+tests/{task}/{test_number}/
 ├── episode_1/
 │   └── planned_actions_t*.csv
 ├── episode_2/
@@ -102,7 +108,7 @@ tests/{task}/{exp_name}/{test_number}/
 
 ### Training Logs
 ```
-logs/{task}/{modality}/{exp_name}/{seed}/
+logs/{task}/{modality}/{seed}/
 ├── models/
 │   └── model.pt
 ├── config.yaml

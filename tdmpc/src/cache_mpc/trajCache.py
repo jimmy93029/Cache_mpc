@@ -2,6 +2,7 @@ import os
 import re
 import numpy as np
 import pandas as pd
+import torch
 
 
 def natural_sort_key(s):

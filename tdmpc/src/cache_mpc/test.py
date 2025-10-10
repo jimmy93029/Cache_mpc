@@ -27,29 +27,14 @@ __CONFIG__, __LOGS__, __TEST__ = 'cfgs', 'logs', 'tests'
 
 def create_test_directory(cfg):
     # Define the base test directory
-    base_test_dir = Path().cwd() / __TEST__ / cfg.task / cfg.exp_name
+    base_test_dir = Path().cwd() / __TEST__ / cfg.task / cfg.test_seed
     
-    test_number = get_next_test_number(base_test_dir)
-    cfg.seed = test_number
     
     test_dir = base_test_dir / str(test_number)
     test_dir.mkdir(parents=True, exist_ok=True)
     print(f"Test directory: {test_dir}")
     
     return test_dir
-
-def get_next_test_number(base_dir):
-    """Get the next available test number for unique directory naming."""
-    if not base_dir.exists():
-        return 1
-    
-    # List all directories that have numeric names
-    existing_dirs = [d for d in base_dir.iterdir() if d.is_dir()]
-    if not existing_dirs:
-        return 1
-    
-    # Return the maximum existing directory number + 1
-    return len(existing_dirs) + 1
 
 
 def test_agent(env, agent, num_episodes, step, test_dir):
@@ -127,13 +112,6 @@ def load_trained_agent(cfg, model_path):
     return agent
 
 
-def matching_fn(matching_fn):
-    function_map = {
-        "find_matching_action": find_matching_action,
-        "find_matching_action_with_threshold": find_matching_action_with_threshold
-    }
-    return function_map.get(matching_fn, None)
-
 
 def main():
     """Main testing function."""
@@ -148,10 +126,10 @@ def main():
     
     # Load trained agent
     # Adjust this path to where your trained model is saved
-    model_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / cfg.exp_name / '1' / 'models' / 'model.pt'
+    model_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / cfg.seed / 'models' / 'model.pt'
     agent = load_trained_agent(cfg, model_path)
 
-    agent.set_reuse_info(cfg.store_traj, cfg.reuse, cfg.reuse_interval, matching_fn(cfg.matching_fn))
+    agent.set_reuse_info(cfg.store_traj, cfg.reuse, cfg.reuse_interval, cfg.matching_fn)
     
     # Test configuration
     num_test_episodes = getattr(cfg, 'test_episodes', 5)  # Default to 5 episodes if not specified
@@ -160,7 +138,7 @@ def main():
     print(f"Starting test with {num_test_episodes} episodes...")
     print(f"Task: {cfg.task}")
     print(f"Experiment: {cfg.exp_name}")
-    print(f"Seed: {cfg.seed}")
+    print(f"Seed: {cfg.test_seed}")
     
     # Run test
     start_time = time.time()

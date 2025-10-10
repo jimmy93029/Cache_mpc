@@ -3,7 +3,10 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
-from cache_mpc.helper import save_planned_actions, save_planned_states, store_trajectory, can_reuse
+from cache_mpc.trajCache import save_planned_actions, save_planned_states, store_trajectory, can_reuse, 
+	find_matching_action, find_matching_action_with_threshold
+from cache_mpc.GuideCache import GuideCache
+from pathlib import Path
 
 
 class TOLD(nn.Module):
@@ -64,20 +67,33 @@ class TDMPC():
 		self.model_target.eval()
 
 		# Cache-mpc variable
-		self.store_traj = False
-		self.reuse = False
+		self.store_traj = self.cfg.store_traj
+		self.reuse = self.cfg.reuse
 		self.trajectory_step = 1 
-		self.trajectory_cache = []
-		self.reuse_interval = 2
+		self.reuse_interval = self.cfg.reuse_interval
 		self.matching_fn = None
+		self.trajectory_cache = []
+		self.guide_cache = None
 
-	def set_reuse_info(self, store_traj, reuse, reuse_interval, matching_fn):
+		self._set_reuse_info()
+
+	def _set_reuse_info(self):
 		"""Set reuse configuration for trajectory caching."""
-		self.store_traj = store_traj
-		self.reuse = reuse
-		self.reuse_interval = reuse_interval
-		self.matching_fn = matching_fn
-		self.trajectory_step = 1 
+		# set matching functino
+		self.matching_fn =  matching_fn(self.cfg.matching_fn)
+
+		if self.cfg.matching_fn:
+			self.guide_cache = GuideCache() 
+			path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / "guide" / f"guided_cache_{cfg.task}"
+			self.guide_cache.load(path)
+
+		def matching_fn(matching_fn):
+			function_map = {
+				"find_matching_action": find_matching_action,
+				"find_matching_action_with_threshold": find_matching_action_with_threshold
+				"find_matching_action_with_guide":None
+			}
+			return function_map.get(matching_fn, None)
 
 	def state_dict(self):
 		"""Retrieve state dict of TOLD model, including slow-moving target network."""
