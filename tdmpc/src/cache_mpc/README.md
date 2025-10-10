@@ -60,10 +60,10 @@ nohup python -m src.cache_mpc.test task=dog-run reuse=true store_traj=false matc
 nohup python -m src.cache_mpc.test task=cartpole-swingup store_traj=false  reuse=false > tests/cartpole-baseline.log &
 ```
 
-### Prepare Guide Cache (guideCache.py)
+### Prepare Guide Cache (post_training.py)
 Prepare guide cache
 ```bash
-nohup python -m src.cache_mpc.guideCache task=humanoid-run > logs/guide-humanoid-run.log &
+nohup python -m src.cache_mpc.post_training task=humanoid-run > logs/guide-humanoid-run.log &
 ```
 
 ## Model Path Structure

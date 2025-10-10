@@ -3,9 +3,8 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
-from cache_mpc.trajCache import save_planned_actions, save_planned_states, store_trajectory, can_reuse, 
-	find_matching_action, find_matching_action_with_threshold
-from cache_mpc.GuideCache import GuideCache
+from cache_mpc.trajCache import save_planned_actions, save_planned_states, store_trajectory, can_reuse, find_matching_action, find_matching_action_with_threshold
+from cache_mpc.guideCache import GuideCache
 from pathlib import Path
 
 
@@ -80,18 +79,21 @@ class TDMPC():
 	def _set_reuse_info(self):
 		"""Set reuse configuration for trajectory caching."""
 		# set matching functino
+		if not self.reuse:
+			return
+
 		self.matching_fn =  matching_fn(self.cfg.matching_fn)
 
-		if self.cfg.matching_fn:
+		if self.cfg.matching_fn == "find_matching_action_with_guide":
 			self.guide_cache = GuideCache() 
-			path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / "guide" / f"guided_cache_{cfg.task}"
+			path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / "guide" / f"guide_cache_{cfg.task}"
 			self.guide_cache.load(path)
 
 		def matching_fn(matching_fn):
 			function_map = {
 				"find_matching_action": find_matching_action,
-				"find_matching_action_with_threshold": find_matching_action_with_threshold
-				"find_matching_action_with_guide":None
+				"find_matching_action_with_threshold": find_matching_action_with_threshold,
+				"find_matching_action_with_guide": find_matching_action
 			}
 			return function_map.get(matching_fn, None)
 
@@ -141,7 +143,8 @@ class TDMPC():
 		# Reuse Traj
 		obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
 		current_state = self.model.h(obs)
-		if (can_reuse(self.cfg.matching_fn, self.reuse, len(self.trajectory_cache), time, self.reuse_interval, self.matching_fn)):
+		if (can_reuse(self.cfg.matching_fn, self.reuse, len(self.trajectory_cache), time, self.reuse_interval, 
+			self.matching_fn, self.guide_cache, current_state)):
 			a = self.matching_fn(current_state, self.cfg.task, self.trajectory_cache, 
 			 					self.trajectory_step, self.device)
 			if a is not None:

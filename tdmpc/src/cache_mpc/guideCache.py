@@ -2,24 +2,9 @@ import faiss
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
 import pickle
-import warnings
-warnings.filterwarnings('ignore')
-import os
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
-os.environ['MUJOCO_GL'] = 'egl'
 import torch
-torch.cuda.set_device(1)
-print(f"Currently using device: {torch.cuda.current_device()}")
-print(f"Device name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
 import numpy as np
-import gym
-import time
 from pathlib import Path
-from src.cfg import parse_cfg
-from src.env import make_env
-from src.algorithm.tdmpc import TDMPC
 
 
 torch.backends.cudnn.benchmark = True
@@ -38,23 +23,17 @@ class GuideCache:
         self,
         state_dim: int,
         num_bits: int = 16,
-        gamma: float = 0.99,
-        v_thresh: float = 0.6,
-        var_thresh: float = 0.1,
+        gamma: float = 0.99
     ):
         """
         Args:
             state_dim: Dimensionality of state space (latent_dim for TD-MPC)
             num_bits: Number of bits for LSH hashing (controls bucket size)
             gamma: Discount factor for return computation
-            v_thresh: Minimum normalized value for trajectory reuse
-            var_thresh: Maximum variance for trajectory reuse
         """
         self.state_dim = state_dim
         self.num_bits = num_bits
         self.gamma = gamma
-        self.v_thresh = v_thresh
-        self.var_thresh = var_thresh
         
         # FAISS LSH index
         self.index = faiss.IndexLSH(state_dim, num_bits)
@@ -269,12 +248,12 @@ class GuideCache:
             
             # How many buckets pass the filter?
             passed = sum(1 for e in self.cache.values() 
-                        if e['value_mean'] > self.v_thresh and 
-                           e['value_var'] < self.var_thresh)
-            print(f"  Buckets passing filter (v>{self.v_thresh}, var<{self.var_thresh}): "
+                        if e['value_mean'] > 0.7 and 
+                           e['value_var'] < 0.3)
+            print(f"  Buckets passing filter (v>{0.7}, var<{0.3}): "
                   f"{passed}/{len(self.cache)} ({100*passed/len(self.cache):.1f}%)")
     
-    def query(self, state, k: int = 1) -> bool:
+    def query(self, state, v_thresh=0.7, var_thresh=0.3, k: int = 1) -> bool:
         """
         Query cache to check if state is high-value and stable.
         
@@ -313,8 +292,8 @@ class GuideCache:
         entry = self.cache[bucket_id]
         
         # Return True if passes filter, False otherwise
-        return (entry['value_mean'] > self.v_thresh and 
-                entry['value_var'] < self.var_thresh)
+        return (entry['value_mean'] > v_thresh and 
+                entry['value_var'] < var_thresh)
     
     def get_cache_stats(self) -> Dict:
         """Get statistics about the cache."""
@@ -326,8 +305,8 @@ class GuideCache:
         counts = [e['count'] for e in self.cache.values()]
         
         passed = sum(1 for e in self.cache.values() 
-                    if e['value_mean'] > self.v_thresh and 
-                       e['value_var'] < self.var_thresh)
+                    if e['value_mean'] > 0.7 and 
+                       e['value_var'] < 0.3)
         
         return {
             'num_buckets': len(self.cache),
@@ -358,8 +337,6 @@ class GuideCache:
             'state_dim': self.state_dim,
             'num_bits': self.num_bits,
             'gamma': self.gamma,
-            'v_thresh': self.v_thresh,
-            'var_thresh': self.var_thresh,
             'return_min': self.return_min,
             'return_max': self.return_max,
         }
@@ -403,117 +380,9 @@ class GuideCache:
         self.state_dim = metadata['state_dim']
         self.num_bits = metadata['num_bits']
         self.gamma = metadata['gamma']
-        self.v_thresh = metadata['v_thresh']
-        self.var_thresh = metadata['var_thresh']
         self.return_min = metadata['return_min']
         self.return_max = metadata['return_max']
         
         print(f"Cache loaded from {path}_*")
 
 
-
-# ============================================
-# Usage Example
-# ============================================
-
-def load_trained_agent(cfg, model_path):
-    """Load a trained agent from checkpoint."""
-    agent = TDMPC(cfg)
-    
-    if os.path.exists(model_path):
-        print(f"Loading trained model from: {model_path}")
-        agent.load(model_path)
-    else:
-        raise FileNotFoundError(f"Model file not found at {model_path}")
-    
-    return agent
-
-
-def example_usage():
-    """Example of how to use GuidedCache with TD-MPC."""
-    
-    # Parse config and setup
-    cfg = parse_cfg(Path().cwd() / __CONFIG__)
-    env = make_env(cfg)
-
-    model_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / 'models' / 'model.pt'
-    agent = load_trained_agent(cfg, model_path)
-    
-    # Initialize cache
-    cache = GuidedCache(
-        state_dim=cfg.latent_dim,  # TD-MPC's latent dimension
-        num_bits=16,
-        gamma=0.99,
-        v_thresh=0.6,
-        var_thresh=0.1
-    )
-    
-    start_time = time.time()
-    # PHASE 1: Collect trajectories
-    print("=" * 60)
-    print("PHASE 1: Collecting trajectories...")
-    print("=" * 60)
-    
-    episodes = cache.collect_trajectories(
-        env=env,
-        agent=agent,
-        n_episodes=500,
-        max_steps=1000
-    )
-    
-    # PHASE 2: Compute MC returns
-    print("\n" + "=" * 60)
-    print("PHASE 2: Computing Monte Carlo returns...")
-    print("=" * 60)
-    
-    data = cache.compute_mc_returns(episodes)
-    print(f"Computed returns for {len(data)} state-return pairs")
-    
-    # PHASE 3: Build cache (LSH + aggregation + normalization)
-    print("\n" + "=" * 60)
-    print("PHASE 3: Building cache...")
-    print("=" * 60)
-    
-    cache.build_cache(data, verbose=True)
-    
-    # Save cache
-    save_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / "guide" / f"guided_cache_{cfg.task}"
-    cache.save(str(save_path))
-
-    test_time = time.time() - start_time
-    print(f"test time = {test_time}\n")
-    
-    # Test query
-    print("\n" + "=" * 60)
-    print("Testing query...")
-    print("=" * 60)
-    
-    obs = env.reset()
-    with torch.no_grad():
-        obs_tensor = torch.tensor(obs, dtype=torch.float32, device=agent.device).unsqueeze(0)
-        embed = agent.model.h(obs_tensor)
-    
-    should_reuse = cache.query(embed)
-    print(f"Query result for random state: {should_reuse}")
-    
-    # Get statistics
-    stats = cache.get_cache_stats()
-    print(f"\nCache statistics:")
-    for k, v in stats.items():
-        print(f"  {k}: {v}")
-
-
-if __name__ == "__main__":
-    print("GuidedCache for TD-MPC")
-    print("=" * 60)
-    print("\nThis module implements value-guided state filtering")
-    print("using FAISS LSH and Monte Carlo returns.")
-    print("\nKey features:")
-    print("  - Works with TD-MPC latent embeddings")
-    print("  - MC returns (no Q-function needed)")
-    print("  - FAISS LSH for O(d) retrieval")
-    print("  - Normalized returns to [0, 1]")
-    print("  - Returns True/False for reuse decision")
-    print("\nSee example_usage() for how to use.")
-    print("=" * 60)
-    example_usage()
