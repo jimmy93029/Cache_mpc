@@ -12,8 +12,7 @@ This implementation extends TD-MPC with trajectory caching and reuse capabilitie
 - `store_traj`: Enable trajectory storage during planning
 
 ### Available Matching Functions
-- `find_matching_action`: Simple state-based matching
-- `find_matching_action_with_adaptive_threshold`: Environment-aware adaptive thresholding
+- `find_matching_action_with_interval`: Simple state-based matching
 - `find_matching_action_with_threshold`: Fixed threshold matching
 
 ### Supported Environments
@@ -40,7 +39,7 @@ Train a model with trajectory caching enabled:
 nohup python src/train.py task=dog-run exp_name=dog-run-horizon5 horizon=5 reuse=true store_traj=true > logs/dog-run-horizon5.log &
 
 # Training with specific cache settings
-nohup python src/train.py task=humanoid-run exp_name=humanoid-run horizon=5 reuse=true reuse_interval=2 matching_fn=find_matching_action_with_adaptive_threshold > logs/humanoid-run.log &
+nohup python src/train.py task=humanoid-run exp_name=humanoid-run horizon=5 reuse=true reuse_interval=2 matching_fn=find_matching_action_with_threshold > logs/humanoid-run.log &
 
 # Baseline training (no caching)
 nohup python src/train.py task=cartpole-swingup exp_name=cartpole-baseline horizon=5 reuse=false > logs/cartpole-baseline.log &
@@ -51,19 +50,23 @@ Test a trained model with trajectory reuse:
 
 ```bash
 # Basic testing with model auto-loading
-nohup python -m src.cache_mpc.test task=humanoid-run reuse=true reuse_interval=2  store_traj=false > tests/humanoid-run-reuse.log &
+nohup python -m src.cache_mpc.test task=humanoid-run exp_name=with_interval reuse=true reuse_interval=2 store_traj=false > tests/humanoid-run-reuse.log &
 
 # Testing with specific cache configuration
-nohup python -m src.cache_mpc.test task=dog-run reuse=true store_traj=false matching_fn=find_matching_action_with_threshold > tests/dog-run.log &
+nohup python -m src.cache_mpc.test task=dog-run exp_name=with_threshold reuse=true store_traj=false matching_fn=find_matching_action_with_threshold > tests/dog-run.log &
 
 # Baseline testing (no reuse) 
-nohup python -m src.cache_mpc.test task=cartpole-swingup store_traj=false  reuse=false > tests/cartpole-baseline.log &
+nohup python -m src.cache_mpc.test task=cartpole-swingup exp_name=no-reuse store_traj=false reuse=false > tests/cartpole-baseline.log &
 ```
 
 ### Prepare Guide Cache (post_training.py)
 Prepare guide cache
 ```bash
 nohup python -m src.cache_mpc.post_training task=humanoid-run > logs/guide-humanoid-run.log &
+```
+Test
+```bash
+nohup python -m src.cache_mpc.test task=dog-run exp_name=with_guide reuse=true store_traj=true matching_fn=find_matching_action_with_guide > tests/dog-run.log &
 ```
 
 ## Model Path Structure
@@ -85,10 +88,10 @@ Make sure that the exp name match the name of the training dir, logs
 #### Adaptive Threshold Experiment
 ```yaml
 # cfgs/test.yaml
-store_traj: True
-reuse: True
+store_traj: False
+reuse: False
 reuse_interval: 2
-matching_fn: find_matching_action
+matching_fn: find_matching_action_with_interval
 ```
 
 ## Output Structure

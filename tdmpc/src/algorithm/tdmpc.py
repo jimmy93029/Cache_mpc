@@ -8,6 +8,8 @@ from cache_mpc.guideCache import GuideCache
 from pathlib import Path
 
 
+__LOGS__ = "logs"
+
 class TOLD(nn.Module):
 	"""Task-Oriented Latent Dynamics (TOLD) model used in TD-MPC."""
 	def __init__(self, cfg):
@@ -78,24 +80,25 @@ class TDMPC():
 
 	def _set_reuse_info(self):
 		"""Set reuse configuration for trajectory caching."""
-		# set matching functino
+		def matching_fn(matching_fn):
+			function_map = {
+				"find_matching_action_with_interval": find_matching_action,
+				"find_matching_action_with_threshold": find_matching_action_with_threshold,
+				"find_matching_action_with_guide": find_matching_action
+			}
+			return function_map.get(matching_fn, None)
+
+		# set matching function
 		if not self.reuse:
 			return
 
 		self.matching_fn =  matching_fn(self.cfg.matching_fn)
 
 		if self.cfg.matching_fn == "find_matching_action_with_guide":
-			self.guide_cache = GuideCache() 
-			path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / "guide" / f"guide_cache_{cfg.task}"
+			self.guide_cache = GuideCache(self.cfg.latent_dim) 
+			path = Path().cwd() / __LOGS__ / self.cfg.task / self.cfg.modality / str(self.cfg.seed) / "guide" / f"guide_cache_{self.cfg.task}"
 			self.guide_cache.load(path)
 
-		def matching_fn(matching_fn):
-			function_map = {
-				"find_matching_action": find_matching_action,
-				"find_matching_action_with_threshold": find_matching_action_with_threshold,
-				"find_matching_action_with_guide": find_matching_action
-			}
-			return function_map.get(matching_fn, None)
 
 	def state_dict(self):
 		"""Retrieve state dict of TOLD model, including slow-moving target network."""

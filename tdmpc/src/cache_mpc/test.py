@@ -18,7 +18,6 @@ from pathlib import Path
 from src.cfg import parse_cfg
 from src.env import make_env
 from src.algorithm.tdmpc import TDMPC
-from .helper import find_matching_action, find_matching_action_with_threshold
 
 
 torch.backends.cudnn.benchmark = True
@@ -27,10 +26,8 @@ __CONFIG__, __LOGS__, __TEST__ = 'cfgs', 'logs', 'tests'
 
 def create_test_directory(cfg):
     # Define the base test directory
-    base_test_dir = Path().cwd() / __TEST__ / cfg.task / cfg.test_seed
+    test_dir = Path().cwd() / __TEST__ / cfg.task / str(cfg.test_seed) / cfg.exp_name
     
-    
-    test_dir = base_test_dir / str(test_number)
     test_dir.mkdir(parents=True, exist_ok=True)
     print(f"Test directory: {test_dir}")
     
@@ -126,10 +123,8 @@ def main():
     
     # Load trained agent
     # Adjust this path to where your trained model is saved
-    model_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / cfg.seed / 'models' / 'model.pt'
+    model_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / 'models' / 'model.pt'
     agent = load_trained_agent(cfg, model_path)
-
-    agent.set_reuse_info(cfg.store_traj, cfg.reuse, cfg.reuse_interval, cfg.matching_fn)
     
     # Test configuration
     num_test_episodes = getattr(cfg, 'test_episodes', 5)  # Default to 5 episodes if not specified

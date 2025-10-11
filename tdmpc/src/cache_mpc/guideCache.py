@@ -5,6 +5,7 @@ import pickle
 import torch
 import numpy as np
 from pathlib import Path
+import json
 
 
 torch.backends.cudnn.benchmark = True
@@ -149,7 +150,7 @@ class GuideCache:
                 data.append((embed, float(G)))
         
         return data
-    
+        
     def build_cache(
         self,
         data: List[Tuple[np.ndarray, float]],
@@ -169,7 +170,7 @@ class GuideCache:
         states = np.array([s for s, v in data], dtype=np.float32)
         returns = np.array([v for s, v in data], dtype=np.float32)
         
-        # Store min/max for normalization
+        # Store min/max for normalization (global values, used later for comparison)
         self.return_min = float(returns.min())
         self.return_max = float(returns.max())
         
@@ -201,36 +202,51 @@ class GuideCache:
             print(f"Created {len(buckets)} buckets")
             bucket_sizes = [len(items) for items in buckets.values()]
             print(f"Bucket size - Mean: {np.mean(bucket_sizes):.1f}, "
-                  f"Median: {np.median(bucket_sizes):.1f}, "
-                  f"Max: {np.max(bucket_sizes)}")
+                f"Median: {np.median(bucket_sizes):.1f}, "
+                f"Max: {np.max(bucket_sizes)}")
         
-        # PHASE 3: Aggregate per bucket with normalization
+        # PHASE 3: Aggregate per bucket with normalization across all buckets
         if verbose:
             print("\nAggregating buckets...")
         
+        # First, compute the total value for each bucket
+        total_values = []  # To store the sum of values in each bucket
         for bucket_id, items in buckets.items():
+            values_in_bucket = np.array([v for s, v in items], dtype=np.float32)
+            total_value = values_in_bucket.sum()  # Sum of rewards for the current bucket
+            total_values.append(total_value)
+
+        # Now normalize the aggregated values across all buckets
+        total_values = np.array(total_values, dtype=np.float32)
+        
+        # Normalize aggregated values to [0, 1] across all buckets
+        total_value_min = total_values.min()
+        total_value_max = total_values.max()
+        
+        if total_value_max > total_value_min:
+            normalized_total_values = (total_values - total_value_min) / \
+                                    (total_value_max - total_value_min)
+        else:
+            normalized_total_values = np.ones_like(total_values)
+        
+        # Now store the normalized values in the cache for each bucket
+        for idx, (bucket_id, items) in enumerate(buckets.items()):
             states_in_bucket = np.array([s for s, v in items], dtype=np.float32)
             values_in_bucket = np.array([v for s, v in items], dtype=np.float32)
             
-            # Normalize returns to [0, 1]
-            if self.return_max > self.return_min:
-                normalized_values = (values_in_bucket - self.return_min) / \
-                                   (self.return_max - self.return_min)
-            else:
-                normalized_values = np.ones_like(values_in_bucket)
-            
-            # Aggregate statistics
-            value_mean = float(normalized_values.mean())
-            value_var = float(normalized_values.var())
+            # Aggregate statistics for each bucket
+            value_mean = float(values_in_bucket.mean())  # Mean reward in the bucket
+            value_var = float(values_in_bucket.var())    # Variance of reward in the bucket
             
             # Representative state (centroid)
             state_rep = states_in_bucket.mean(axis=0).astype(np.float32)
             
-            # Store in cache
+            # Store in cache with normalized aggregated value
             self.cache[bucket_id] = {
                 'state': state_rep,
                 'value_mean': value_mean,
                 'value_var': value_var,
+                'total_value_normalized': float(normalized_total_values[idx]),
                 'count': len(items)
             }
         
@@ -238,20 +254,24 @@ class GuideCache:
             # Statistics on cache quality
             values_mean = [entry['value_mean'] for entry in self.cache.values()]
             values_var = [entry['value_var'] for entry in self.cache.values()]
+            total_values_normalized = [entry['total_value_normalized'] for entry in self.cache.values()]
             
             print(f"\nCache statistics:")
             print(f"  Total buckets: {len(self.cache)}")
+            print(f"  Normalized total value - Mean: {np.mean(total_values_normalized):.3f}, "
+                f"Std: {np.std(total_values_normalized):.3f}")
             print(f"  Normalized value - Mean: {np.mean(values_mean):.3f}, "
-                  f"Std: {np.std(values_mean):.3f}")
+                f"Std: {np.std(values_mean):.3f}")
             print(f"  Variance - Mean: {np.mean(values_var):.3f}, "
-                  f"Max: {np.max(values_var):.3f}")
+                f"Max: {np.max(values_var):.3f}")
             
             # How many buckets pass the filter?
             passed = sum(1 for e in self.cache.values() 
                         if e['value_mean'] > 0.7 and 
-                           e['value_var'] < 0.3)
+                        e['value_var'] < 0.3)
             print(f"  Buckets passing filter (v>{0.7}, var<{0.3}): "
-                  f"{passed}/{len(self.cache)} ({100*passed/len(self.cache):.1f}%)")
+                f"{passed}/{len(self.cache)} ({100*passed/len(self.cache):.1f}%)")
+
     
     def query(self, state, v_thresh=0.7, var_thresh=0.3, k: int = 1) -> bool:
         """
@@ -384,5 +404,4 @@ class GuideCache:
         self.return_max = metadata['return_max']
         
         print(f"Cache loaded from {path}_*")
-
 

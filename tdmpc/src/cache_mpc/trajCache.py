@@ -180,7 +180,7 @@ def find_matching_action_with_threshold(current_state, env_type, trajectory_cach
         base_thresholds = {
             'cartpole': 5,     # 4D state space
             'acrobot': 5,      # 6D state space
-            'humanoid': 100,    # 108D state space, stricter
+            'humanoid': 150,    # 108D state space, stricter
             'walker': 15,      # 17D state space
             'cheetah': 15,     # 17D state space
             'cup': 5,          # 8D state space
@@ -275,6 +275,7 @@ def find_matching_action(current_state, env_type, trajectory_cache, step_in_traj
                                 dtype=torch.float32, device=device)
             print(f"选择轨迹 #{best_traj_idx}, "
                   f"距离: {min_distance:.4f}")
+            trajectory_cache.clear()
             return action
     
     return None
@@ -282,7 +283,7 @@ def find_matching_action(current_state, env_type, trajectory_cache, step_in_traj
 
 def can_reuse(mathcing_fn_name, reuse, length, time, reuse_interval, matching_fn, guide_cache, embed_state):
     function_map = {
-        "find_matching_action": reuse and length > 0 
+        "find_matching_action_with_interval": reuse and length > 0 
             and time > 0 and time % reuse_interval == 0 and
 			matching_fn is not None,
         "find_matching_action_with_threshold": reuse and length > 0 
@@ -291,3 +292,4 @@ def can_reuse(mathcing_fn_name, reuse, length, time, reuse_interval, matching_fn
 			and time > 0 and guide_cache.query(embed_state)
     }
     return function_map.get(mathcing_fn_name, False)
+    

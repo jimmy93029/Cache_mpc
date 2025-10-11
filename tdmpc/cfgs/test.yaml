@@ -1,5 +1,5 @@
 store_traj: False
 reuse: False
 reuse_interval: 2
-matching_fn: find_matching_action
+matching_fn: find_matching_action_with_interval
 test_seed: 1
