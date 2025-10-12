@@ -10,7 +10,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 os.environ['MUJOCO_GL'] = 'egl'
 import torch
-torch.cuda.set_device(1)
+# 您可以更改使用的GPU
+torch.cuda.set_device(1) 
 print(f"Currently using device: {torch.cuda.current_device()}")
 print(f"Device name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
 import numpy as np
@@ -20,7 +21,7 @@ from pathlib import Path
 from src.cfg import parse_cfg
 from src.env import make_env
 from src.algorithm.tdmpc import TDMPC
-from .guideCache import GuideCache
+from .guideCache import GuideCache # 假設您的 GuideCache class 在同一個資料夾
 
 
 torch.backends.cudnn.benchmark = True
@@ -45,7 +46,7 @@ def load_trained_agent(cfg, model_path):
 
 
 def example_usage():
-    """Example of how to use GuideCache with TD-MPC."""
+    """Example of how to use the updated GuideCache with TD-MPC."""
     
     # Parse config and setup
     cfg = parse_cfg(Path().cwd() / __CONFIG__)
@@ -54,11 +55,14 @@ def example_usage():
     model_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / 'models' / 'model.pt'
     agent = load_trained_agent(cfg, model_path)
     
-    # Initialize cache
+    # ================================================================= #
+    # MODIFIED: Initialize cache using the new, smarter constructor     #
+    # ================================================================= #
     cache = GuideCache(
-        state_dim=cfg.latent_dim,  # TD-MPC's latent dimension
-        num_bits=16,
-        gamma=0.99
+        task_name=cfg.task,         # 傳入任務名稱以自動選擇 nlist
+        state_dim=cfg.latent_dim,   # TD-MPC 的潛在維度
+        index_type='IVF',           # 明確使用 IVF 索引以獲得更好性能
+        gamma=cfg.discount          # 從 config 讀取 gamma 以保持一致
     )
     
     start_time = time.time()
@@ -82,19 +86,19 @@ def example_usage():
     data = cache.compute_mc_returns(episodes)
     print(f"Computed returns for {len(data)} state-return pairs")
     
-    # PHASE 3: Build cache (LSH + aggregation + normalization)
+    # PHASE 3: Build cache (IVF clustering + aggregation + normalization)
     print("\n" + "=" * 60)
     print("PHASE 3: Building cache...")
     print("=" * 60)
     
     cache.build_cache(data, verbose=True)
     
-    # Save cache
+    # Save cache, index, and the new JSON report
     save_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / "guide" / f"guide_cache_{cfg.task}"
     cache.save(str(save_path))
 
     test_time = time.time() - start_time
-    print(f"test time = {test_time}\n")
+    print(f"Total cache build time = {test_time:.2f} seconds\n")
     
     # Test query
     print("\n" + "=" * 60)
@@ -107,26 +111,37 @@ def example_usage():
         embed = agent.model.h(obs_tensor)
     
     should_reuse = cache.query(embed)
-    print(f"Query result for random state: {should_reuse}")
+    print(f"Query result for a random initial state: {should_reuse}")
     
-    # Get statistics
+    # ================================================================= #
+    # MODIFIED: Get and print statistics from the new method            #
+    # ================================================================= #
     stats = cache.get_cache_stats()
-    print(f"\nCache statistics:")
-    for k, v in stats.items():
-        print(f"  {k}: {v}")
+    print(f"\nCache Build Statistics (also in the .json report):")
+    if stats:
+        for k, v in stats.items():
+            # 格式化輸出，使其更易讀
+            if isinstance(v, float):
+                print(f"  - {k}: {v:.4f}")
+            else:
+                print(f"  - {k}: {v}")
+    else:
+        print("  - No statistics available.")
 
 
 if __name__ == "__main__":
-    print("GuideCache for TD-MPC")
     print("=" * 60)
-    print("\nThis module implements value-guide state filtering")
-    print("using FAISS LSH and Monte Carlo returns.")
+    print("GuideCache Post-Training Builder for TD-MPC")
+    print("=" * 60)
+    # ================================================================= #
+    # MODIFIED: Updated description to reflect new features             #
+    # ================================================================= #
+    print("\nThis module builds a value-guided state cache from a trained agent.")
     print("\nKey features:")
     print("  - Works with TD-MPC latent embeddings")
-    print("  - MC returns (no Q-function needed)")
-    print("  - FAISS LSH for O(d) retrieval")
-    print("  - Normalized returns to [0, 1]")
-    print("  - Returns True/False for reuse decision")
-    print("\nSee example_usage() for how to use.")
+    print("  - Uses Monte Carlo returns for value estimation")
+    print("  - Employs data-driven FAISS IVF for robust state partitioning")
+    print("  - Automatically selects nlist (cluster count) based on task name")
+    print("  - Generates a detailed, human-readable JSON report for analysis")
     print("=" * 60)
     example_usage()
