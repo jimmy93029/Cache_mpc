@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 os.environ['MUJOCO_GL'] = 'egl'
 import torch
-torch.cuda.set_device(1)
+torch.cuda.set_device(2)
 print(f"Currently using device: {torch.cuda.current_device()}")
 print(f"Device name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
 from gym.wrappers import RecordVideo
@@ -14,6 +14,7 @@ from gym.wrappers.monitoring.video_recorder import VideoRecorder
 import numpy as np
 import gym
 import time
+import random
 from pathlib import Path
 from src.cfg import parse_cfg
 from src.env import make_env
@@ -32,6 +33,16 @@ def create_test_directory(cfg):
     print(f"Test directory: {test_dir}")
     
     return test_dir
+
+
+def set_seed(seed):
+    """Sets the seed for reproducibility across different libraries."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # For CUDA
+    torch.backends.cudnn.deterministic = True  # Ensures deterministic behavior
+    torch.backends.cudnn.benchmark = False    # Turns off cuDNN auto-tuner to make results reproducible
 
 
 def test_agent(env, agent, num_episodes, step, test_dir):
@@ -109,7 +120,6 @@ def load_trained_agent(cfg, model_path):
     return agent
 
 
-
 def main():
     """Main testing function."""
     # Parse configuration
@@ -117,6 +127,7 @@ def main():
     
     # Create test directory structure
     test_dir = create_test_directory(cfg)
+    set_seed(cfg.test_seed)
 
     # Create environment
     env = make_env(cfg)

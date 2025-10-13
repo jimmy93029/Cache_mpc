@@ -36,13 +36,13 @@ Train a model with trajectory caching enabled:
 
 ```bash
 # Basic training with caching
-nohup python src/train.py task=dog-run exp_name=dog-run-horizon5 horizon=5 reuse=true store_traj=true > logs/dog-run-horizon5.log &
+nohup python src/train.py task=dog-run exp_name=dog-run reuse=true store_traj=true > logs/dog-run-horizon5.log &
 
 # Training with specific cache settings
-nohup python src/train.py task=humanoid-run exp_name=humanoid-run horizon=5 reuse=true reuse_interval=2 matching_fn=find_matching_action_with_threshold > logs/humanoid-run.log &
+nohup python src/train.py task=humanoid-run exp_name=humanoid-run reuse=true reuse_interval=2 matching_fn=find_matching_action_with_threshold > logs/humanoid-run.log &
 
 # Baseline training (no caching)
-nohup python src/train.py task=cartpole-swingup exp_name=cartpole-baseline horizon=5 reuse=false > logs/cartpole-baseline.log &
+nohup python src/train.py task=cartpole-swingup exp_name=cartpole-swingup reuse=false > logs/cartpole-baseline.log &
 ```
 
 ### Testing (test.py)

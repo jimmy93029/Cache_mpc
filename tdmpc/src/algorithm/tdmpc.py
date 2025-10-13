@@ -95,10 +95,9 @@ class TDMPC():
 		self.matching_fn =  matching_fn(self.cfg.matching_fn)
 
 		if self.cfg.matching_fn == "find_matching_action_with_guide":
-			self.guide_cache = GuideCache(self.cfg.latent_dim) 
-			path = Path().cwd() / __LOGS__ / self.cfg.task / self.cfg.modality / str(self.cfg.seed) / "guide" / f"guide_cache_{self.cfg.task}"
+			self.guide_cache = GuideCache(self.cfg.task, self.cfg.latent_dim) 
+			path = Path().cwd() / __LOGS__ / self.cfg.task / self.cfg.modality / str(self.cfg.seed) / "guide" / f"guide_cache_{self.cfg.task}_{self.cfg.index_type}"
 			self.guide_cache.load(path)
-
 
 	def state_dict(self):
 		"""Retrieve state dict of TOLD model, including slow-moving target network."""

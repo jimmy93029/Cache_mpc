@@ -139,9 +139,11 @@ class GuideCache:
         # CORRECTED LOGIC: 使用 index.quantizer.assign() 來取得 cluster ID  #
         # ================================================================= #
         if self.index_type == 'IVF':
-            # 這是取得每個向量所屬 cluster ID 的標準且正確的方法。
-            # quantizer 就是我們用 k-means 訓練好的模型。
-            bucket_ids_flat = self.index.quantizer.assign(states)
+            # 直接在僅包含 nlist 個簇中心的 quantizer 上搜尋最近的 1 個鄰居。
+            # 回傳的索引 I 即為 cluster ID (0 到 nlist-1)。
+            # D 是距離，I 是索引。我們只需要索引 I。
+            _, bucket_indices = self.index.quantizer.search(states, 1)
+            bucket_ids_flat = bucket_indices.flatten()
             get_bucket_id = lambda i: int(bucket_ids_flat[i])
         else: # LSH
             hash_codes = self.index.sa_encode(states)
@@ -227,8 +229,8 @@ class GuideCache:
         # ================================================================= #
         if self.index_type == 'IVF':
             # 對查詢狀態找到它所屬的 cluster ID
-            bucket_id_array = self.index.quantizer.assign(query_state)
-            bucket_id = int(bucket_id_array[0])
+            _, bucket_indices = self.index.quantizer.search(query_state, 1)
+            bucket_id = int(bucket_indices[0][0])
         else: # LSH
             hash_code = self.index.sa_encode(query_state)[0]
             bucket_id = int.from_bytes(hash_code.tobytes(), byteorder='big')
@@ -307,9 +309,8 @@ class GuideCache:
         print(f"Human-readable report saved to {json_path}")
 
 
-    def load(self, path: str):
+    def load(self, base_path: str):
         # ... (This method is slightly modified to load new structure)
-        base_path = self._get_save_path(path)
         self.index = faiss.read_index(f"{base_path}_index.faiss")
         
         with open(f"{base_path}_cache.pkl", 'rb') as f:

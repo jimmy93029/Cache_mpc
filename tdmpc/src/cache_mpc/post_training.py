@@ -61,7 +61,7 @@ def example_usage():
     cache = GuideCache(
         task_name=cfg.task,         # 傳入任務名稱以自動選擇 nlist
         state_dim=cfg.latent_dim,   # TD-MPC 的潛在維度
-        index_type='IVF',           # 明確使用 IVF 索引以獲得更好性能
+        index_type='LSH',           # 明確使用 IVF 索引以獲得更好性能
         gamma=cfg.discount          # 從 config 讀取 gamma 以保持一致
     )
     
