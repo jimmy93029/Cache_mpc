@@ -25,7 +25,7 @@ class GuideCache:
         self,
         task_name: str,
         state_dim: int,
-        index_type: str = 'IVF',
+        index_type: str = 'LSH',
         gamma: float = 0.99,
         nlist_override: Optional[int] = None
     ):

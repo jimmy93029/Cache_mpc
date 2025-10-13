@@ -146,7 +146,7 @@ class TDMPC():
 		obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
 		current_state = self.model.h(obs)
 		if (can_reuse(self.cfg.matching_fn, self.reuse, len(self.trajectory_cache), time, self.reuse_interval, 
-			self.matching_fn, self.guide_cache, current_state)):
+			self.matching_fn, self.guide_cache, current_state, self.cfg.v_thresh, self.cfg.var_thresh)):
 			a = self.matching_fn(current_state, self.cfg.task, self.trajectory_cache, 
 			 					self.trajectory_step, self.device)
 			if a is not None:

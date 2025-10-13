@@ -182,7 +182,7 @@ def find_matching_action_with_threshold(current_state, env_type, trajectory_cach
             'acrobot': 5,      # 6D state space
             'humanoid': 150,    # 108D state space, stricter
             'walker': 15,      # 17D state space
-            'cheetah': 15,     # 17D state space
+            'cheetah': 25,     # 17D state space
             'cup': 5,          # 8D state space
             'dog': 5,         # High-dimensional state space
             'finger': 5,       # 9D state space
@@ -281,7 +281,7 @@ def find_matching_action(current_state, env_type, trajectory_cache, step_in_traj
     return None
 
 
-def can_reuse(mathcing_fn_name, reuse, length, time, reuse_interval, matching_fn, guide_cache, embed_state):
+def can_reuse(mathcing_fn_name, reuse, length, time, reuse_interval, matching_fn, guide_cache, embed_state, v_thresh, var_thresh):
     function_map = {
         "find_matching_action_with_interval": reuse and length > 0 
             and time > 0 and time % reuse_interval == 0 and
@@ -289,7 +289,7 @@ def can_reuse(mathcing_fn_name, reuse, length, time, reuse_interval, matching_fn
         "find_matching_action_with_threshold": reuse and length > 0 
 			and time > 0 and matching_fn is not None,
         "find_matching_action_with_guide": reuse and length > 0 
-			and time > 0 and guide_cache is not None and guide_cache.query(embed_state)
+			and time > 0 and guide_cache is not None and guide_cache.query(embed_state, v_thresh, var_thresh)
     }
     return function_map.get(mathcing_fn_name, False)
     
