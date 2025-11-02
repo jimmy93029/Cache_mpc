@@ -42,7 +42,8 @@ class TDMPC2(torch.nn.Module):
 		self._prev_mean = torch.nn.Buffer(torch.zeros(self.cfg.horizon, self.cfg.action_dim, device=self.device))
 		if cfg.compile:
 			print('Compiling update function with torch.compile...')
-			self._update = torch.compile(self._update, mode="reduce-overhead")
+			self._update = torch.compile(self._update, mode="default")
+			# self._update = torch.compile(self._update, mode="reduce-overhead")
 		
 	@property
 	def plan(self):
@@ -50,7 +51,8 @@ class TDMPC2(torch.nn.Module):
 		if _plan_val is not None:
 			return _plan_val
 		if self.cfg.compile:
-			plan = torch.compile(self._plan, mode="reduce-overhead")
+			plan = torch.compile(self._plan, mode="default")
+			# plan = torch.compile(self._plan, mode="reduce-overhead")
 		else:
 			plan = self._plan
 		self._plan_val = plan
@@ -258,24 +260,25 @@ class TDMPC2(torch.nn.Module):
 		Returns:
 			torch.Tensor: TD-target.
 		"""
-		action, _ = self.model.pi(next_z, task)
+		next_z1 = next_z.clone()
+		action, _ = self.model.pi(next_z1, task)
 		discount = self.discount[task].unsqueeze(-1) if self.cfg.multitask else self.discount
-		v_targets = self.model.Q(next_z, action, task, return_type='min', target=True)
-		td_targets = reward + discount * (1-terminated) * v_targets
-		return v_targets, td_targets
+		td_targets = reward + discount * (1-terminated) * self.model.Q(next_z1, action, task, return_type='min', target=True)
+		return td_targets
 	
 	def _update(self, obs, action, reward, terminated, task=None):
 		# Compute targets
 		with torch.no_grad():
-			next_z = self.model.encode(obs[1:], task)
-			v_targets, td_targets = self._td_target(next_z, reward, terminated, task)
+			obs1 = obs.clone()
+			next_z = self.model.encode(obs1[1:], task)
+			td_targets = self._td_target(next_z, reward, terminated, task)
 
 		# Prepare for update
 		self.model.train()
 
 		# Latent rollout
 		zs = torch.empty(self.cfg.horizon+1, self.cfg.batch_size, self.cfg.latent_dim, device=self.device)
-		z = self.model.encode(obs[0], task)
+		z = self.model.encode(obs1[0], task)
 		zs[0] = z
 		consistency_loss = 0
 		for t, (_action, _next_z) in enumerate(zip(action.unbind(0), next_z.unbind(0))):
@@ -291,21 +294,28 @@ class TDMPC2(torch.nn.Module):
 			termination_pred = self.model.termination(zs[1:], task, unnormalized=True)
 
 		# Compute losses
-		reward_loss, q_loss, v_loss = 0, 0, 0
+		reward_loss, q_loss = 0, 0
 		for t, (rew_pred_unbind, rew_unbind, td_targets_unbind, qs_unbind) in enumerate(zip(reward_preds.unbind(0), reward.unbind(0), td_targets.unbind(0), qs.unbind(1))):
 			reward_loss = reward_loss + math.soft_ce(rew_pred_unbind, rew_unbind, self.cfg).mean() * self.cfg.rho**t
 			for _, qs_unbind_unbind in enumerate(qs_unbind.unbind(0)):
 				q_loss = q_loss + math.soft_ce(qs_unbind_unbind, td_targets_unbind, self.cfg).mean() * self.cfg.rho**t
 
 		# torch.compiler.cudagraph_mark_step_begin()
+		with torch.no_grad():
+			obs2 = obs.clone()
+			next_z2 = self.model.encode(obs2[1:], task)
+			action, _ = self.model.pi(next_z2, task)
+			v_targets = self.model.Q(next_z2, action, task, return_type='min', target=True)
 
 		# Prediction and Compute losses for vs
-		# zs_next = zs[1:].clone()
-		# vs = self.model.V(zs_next, task, return_type='all')
-		# for t, (v_targets_unbind, vs_unbind) in enumerate(zip(v_targets.unbind(0), vs.unbind(1))):
-		# 	for _, vs_unbind_unbind in enumerate(vs_unbind.unbind(0)):
-		# 		v_loss = v_loss + math.soft_ce(vs_unbind_unbind, v_targets_unbind, self.cfg).mean() * self.cfg.rho**t
-		
+		v_loss = 0
+		__zs = zs[1:].clone()
+		vs = self.model.V(__zs, task, return_type='all')
+		vs = vs.clone()
+		for t, (v_targets_unbind, vs_unbind) in enumerate(zip(v_targets.unbind(0), vs.unbind(1))):
+			for _, vs_unbind_unbind in enumerate(vs_unbind.unbind(0)):
+				v_loss = v_loss + math.soft_ce(vs_unbind_unbind, v_targets_unbind, self.cfg).mean() * self.cfg.rho**t
+
 		consistency_loss = consistency_loss / self.cfg.horizon
 		reward_loss = reward_loss / self.cfg.horizon
 		if self.cfg.episodic:

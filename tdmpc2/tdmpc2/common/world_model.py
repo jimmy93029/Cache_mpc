@@ -95,12 +95,6 @@ class WorldModel(nn.Module):
 		"""
 		self._target_Qs_params.lerp_(self._detach_Qs_params, self.cfg.tau)
 
-	def soft_update_target_V(self):
-		"""
-		Soft-update target V-networks using Polyak averaging.
-		"""
-		self._target_Vs_params.lerp_(self._detach_Vs_params, self.cfg.tau)
-
 	def task_emb(self, x, task):
 		"""
 		Continuous task embedding for multi-task experiments.
