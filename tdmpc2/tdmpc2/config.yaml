@@ -15,7 +15,8 @@ eval_freq: 50000
 steps: 10_000_000
 batch_size: 256
 reward_coef: 0.1
-value_coef: 0.1
+q_coef: 0.1
+v_coef: 0.1
 termination_coef: 1
 consistency_coef: 20
 rho: 0.5
@@ -60,6 +61,7 @@ mlp_dim: 512
 latent_dim: 512
 task_dim: 96
 num_q: 5
+num_v: 5
 dropout: 0.01
 simnorm_dim: 8
 

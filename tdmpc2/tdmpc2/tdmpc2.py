@@ -44,30 +44,6 @@ class TDMPC2(torch.nn.Module):
 			print('Compiling update function with torch.compile...')
 			self._update = torch.compile(self._update, mode="reduce-overhead")
 		
-		# # cache mpc variables
-		# # 0. 
-		# self.reuse = False
-		# # --- Cache Preallocation (NumPy) ---
-		# # 1. Latent States (the key for retrieval)
-		# self.cache_states = np.zeros(
-		#     (self.cache_capacity, self.latent_dim), 
-		#     dtype=np.float32
-		# )
-		
-		# # 2. Optimal First Action (the data to retrieve)
-		# self.cache_actions = np.zeros(
-		#     (self.cache_capacity, self.action_dim), 
-		#     dtype=np.float32
-		# )
-		
-		# # 3. Cache Indexing Pointers (for Circular Buffer)
-		# self.cache_count = 0   # Current valid entry count
-	
-		# self.cache_uncertainty = np.zeros(
-		#     self.cache_capacity, 
-		#     dtype=np.float32
-		# )
-
 	@property
 	def plan(self):
 		_plan_val = getattr(self, "_plan_val", None)
@@ -146,25 +122,20 @@ class TDMPC2(torch.nn.Module):
 		return action[0].cpu()
 
 	@torch.no_grad()
-	def _estimate_value(self, z, actions, task, reuse):
+	def _estimate_value(self, z, actions, task):
 		"""Estimate value of a trajectory starting at latent state z and executing given actions."""
 		G, discount = 0, 1
 		termination = torch.zeros(self.cfg.num_samples, 1, dtype=torch.float32, device=z.device)
-		# first_state = torch.zeros(self.cfg.num_samples, 1, dtype=torch.float32, device=z.device)
 		for t in range(self.cfg.horizon):
 			reward = math.two_hot_inv(self.model.reward(z, actions[t], task), self.cfg)
 			z = self.model.next(z, actions[t], task)
 			G = G + discount * (1-termination) * reward
 			discount_update = self.discount[torch.tensor(task)] if self.cfg.multitask else self.discount
 			discount = discount * discount_update
-			# if self.cfg.episodic:
-			# 	termination = torch.clip(termination + (self.model.termination(z, task) > 0.5).float(), max=1.)
-			# if reuse and t == 0:
-			# 	first_state = z
-
+			if self.cfg.episodic:
+				termination = torch.clip(termination + (self.model.termination(z, task) > 0.5).float(), max=1.)
 		action, _ = self.model.pi(z, task)
-
-		return G + discount * (1-termination) * self.model.Q(z, action, task, return_type='avg') #, first_state
+		return G + discount * (1-termination) * self.model.Q(z, action, task, return_type='avg')
 
 	@torch.no_grad()
 	def _plan(self, obs, t0=False, eval_mode=False, task=None):
@@ -212,9 +183,9 @@ class TDMPC2(torch.nn.Module):
 				actions = actions * self.model._action_masks[task]
 
 			# Compute elite actions
-			state, value = self._estimate_value(z, actions, task).nan_to_num(0)
+			value = self._estimate_value(z, actions, task).nan_to_num(0)
 			elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
-			elite_value, elite_actions, elite_states = value[elite_idxs], actions[:, elite_idxs], state[:, elite_idxs]
+			elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs] # , state[:, elite_idxs]
 
 			# Update parameters
 			max_value = elite_value.max(0).values
@@ -289,13 +260,15 @@ class TDMPC2(torch.nn.Module):
 		"""
 		action, _ = self.model.pi(next_z, task)
 		discount = self.discount[task].unsqueeze(-1) if self.cfg.multitask else self.discount
-		return reward + discount * (1-terminated) * self.model.Q(next_z, action, task, return_type='min', target=True)
-
+		v_targets = self.model.Q(next_z, action, task, return_type='min', target=True)
+		td_targets = reward + discount * (1-terminated) * v_targets
+		return v_targets, td_targets
+	
 	def _update(self, obs, action, reward, terminated, task=None):
 		# Compute targets
 		with torch.no_grad():
 			next_z = self.model.encode(obs[1:], task)
-			td_targets = self._td_target(next_z, reward, terminated, task)
+			v_targets, td_targets = self._td_target(next_z, reward, terminated, task)
 
 		# Prepare for update
 		self.model.train()
@@ -311,31 +284,42 @@ class TDMPC2(torch.nn.Module):
 			zs[t+1] = z
 
 		# Predictions
-		_zs = zs[:-1]
+		_zs = zs[:-1].clone()
 		qs = self.model.Q(_zs, action, task, return_type='all')
 		reward_preds = self.model.reward(_zs, action, task)
 		if self.cfg.episodic:
 			termination_pred = self.model.termination(zs[1:], task, unnormalized=True)
 
 		# Compute losses
-		reward_loss, value_loss = 0, 0
+		reward_loss, q_loss, v_loss = 0, 0, 0
 		for t, (rew_pred_unbind, rew_unbind, td_targets_unbind, qs_unbind) in enumerate(zip(reward_preds.unbind(0), reward.unbind(0), td_targets.unbind(0), qs.unbind(1))):
 			reward_loss = reward_loss + math.soft_ce(rew_pred_unbind, rew_unbind, self.cfg).mean() * self.cfg.rho**t
 			for _, qs_unbind_unbind in enumerate(qs_unbind.unbind(0)):
-				value_loss = value_loss + math.soft_ce(qs_unbind_unbind, td_targets_unbind, self.cfg).mean() * self.cfg.rho**t
+				q_loss = q_loss + math.soft_ce(qs_unbind_unbind, td_targets_unbind, self.cfg).mean() * self.cfg.rho**t
 
+		# torch.compiler.cudagraph_mark_step_begin()
+
+		# Prediction and Compute losses for vs
+		# zs_next = zs[1:].clone()
+		# vs = self.model.V(zs_next, task, return_type='all')
+		# for t, (v_targets_unbind, vs_unbind) in enumerate(zip(v_targets.unbind(0), vs.unbind(1))):
+		# 	for _, vs_unbind_unbind in enumerate(vs_unbind.unbind(0)):
+		# 		v_loss = v_loss + math.soft_ce(vs_unbind_unbind, v_targets_unbind, self.cfg).mean() * self.cfg.rho**t
+		
 		consistency_loss = consistency_loss / self.cfg.horizon
 		reward_loss = reward_loss / self.cfg.horizon
 		if self.cfg.episodic:
 			termination_loss = F.binary_cross_entropy_with_logits(termination_pred, terminated)
 		else:
 			termination_loss = 0.
-		value_loss = value_loss / (self.cfg.horizon * self.cfg.num_q)
+		q_loss = q_loss / (self.cfg.horizon * self.cfg.num_q)
+		v_loss = v_loss / (self.cfg.horizon * self.cfg.num_v)
 		total_loss = (
 			self.cfg.consistency_coef * consistency_loss +
 			self.cfg.reward_coef * reward_loss +
 			self.cfg.termination_coef * termination_loss +
-			self.cfg.value_coef * value_loss
+			self.cfg.q_coef * q_loss + 
+			self.cfg.v_coef * v_loss
 		)
 
 		# Update model
@@ -355,7 +339,8 @@ class TDMPC2(torch.nn.Module):
 		info = TensorDict({
 			"consistency_loss": consistency_loss,
 			"reward_loss": reward_loss,
-			"value_loss": value_loss,
+			"q_loss": q_loss,
+			"v_loss": v_loss,
 			"termination_loss": termination_loss,
 			"total_loss": total_loss,
 			"grad_norm": grad_norm,

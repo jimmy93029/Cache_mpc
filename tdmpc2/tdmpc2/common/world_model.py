@@ -55,14 +55,12 @@ class WorldModel(nn.Module):
 
 		# value ensemble
 		self._detach_Vs_params = TensorDictParams(self._Vs.params.data, no_convert=True)
-		self._target_Vs_params = TensorDictParams(self._Vs.params.data.clone(), no_convert=True)
+
 		with self._detach_Vs_params.data.to("meta").to_module(self._Vs.module):
 			self._detach_Vs = deepcopy(self._Vs)
-			self._target_Vs = deepcopy(self._Vs)
+
 		delattr(self._detach_Vs, "params")
 		self._detach_Vs.__dict__["params"] = self._detach_Vs_params
-		delattr(self._target_Vs, "params")
-		self._target_Vs.__dict__["params"] = self._target_Vs_params
 
 	def __repr__(self):
 		repr = 'TD-MPC2 World Model\n'
@@ -233,7 +231,7 @@ class WorldModel(nn.Module):
 			return Q.min(0).values
 		return Q.sum(0) / 2
 	
-	def V(self, z, task, return_type='min', target=False, detach=False):
+	def V(self, z, task, return_type='min', detach=False):
 		"""
 		Predict state value.
 		`return_type` can be one of [`min`, `avg`, `all`]:
@@ -247,9 +245,7 @@ class WorldModel(nn.Module):
 		if self.cfg.multitask:
 			z = self.task_emb(z, task)
 
-		if target:
-			vnet = self._target_Vs
-		elif detach:
+		if detach:
 			vnet = self._detach_Vs
 		else:
 			vnet = self._Vs
