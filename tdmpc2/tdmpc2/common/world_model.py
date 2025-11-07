@@ -248,8 +248,8 @@ class WorldModel(nn.Module):
 		if return_type == 'all':
 			return out
 
-		vidx = torch.randperm(self.cfg.num_v, device=out.device)[:2] # 注意这里使用 cfg.num_v
-		V_values = math.two_hot_inv(out[vidx], self.cfg) # 假设 V 值也可能使用 two_hot_inv 轉換
+		vidx = torch.randperm(self.cfg.num_v, device=out.device)[:2] 
+		V_values = math.two_hot_inv(out[vidx], self.cfg) 
 
 		if return_type == "min":
 			return V_values.min(0).values

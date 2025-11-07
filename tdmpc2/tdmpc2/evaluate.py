@@ -77,12 +77,14 @@ def evaluate(cfg: dict):
 			if cfg.save_video:
 				frames = [env.render()]
 			while not done:
-				action = agent.act(obs, t0=t==0, task=task_idx)
+				action = agent.act(obs, t0=t==0, eval_mode=True, task=task_idx)
 				obs, reward, done, info = env.step(action)
 				ep_reward += reward
 				t += 1
 				if cfg.save_video:
 					frames.append(env.render())
+				print(f"obs = {obs}")
+				print(f"reward = {reward}")
 			ep_rewards.append(ep_reward)
 			ep_successes.append(info['success'])
 			if cfg.save_video:
