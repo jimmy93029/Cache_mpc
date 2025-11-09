@@ -8,7 +8,7 @@ import imageio
 import numpy as np
 import torch
 from termcolor import colored
-
+import time
 from common.parser import parse_cfg
 from common.seed import set_seed
 from envs import make_env
@@ -57,6 +57,20 @@ def evaluate(cfg: dict):
 	agent = TDMPC2(cfg)
 	assert os.path.exists(cfg.checkpoint), f'Checkpoint {cfg.checkpoint} not found! Must be a valid filepath.'
 	agent.load(cfg.checkpoint)
+
+	# --- Start of Timing Modifications ---
+	
+	# Initialize timers and counters
+	total_cpu_time = 0.0
+	total_gpu_time = 0.0
+	total_actions = 0
+	
+	# Create CUDA events for precise GPU timing if available
+	if torch.cuda.is_available():
+		start_event = torch.cuda.Event(enable_timing=True)
+		end_event = torch.cuda.Event(enable_timing=True)
+	
+	# --- End of Timing Modifications ---
 	
 	# Evaluate
 	if cfg.multitask:
@@ -77,14 +91,40 @@ def evaluate(cfg: dict):
 			if cfg.save_video:
 				frames = [env.render()]
 			while not done:
+
+				# --- Start of Timing Modifications ---
+				
+				# 1. Measure CPU (Wall-Clock) Time
+				# This measures the total time spent in the function call from the CPU's perspective.
+				cpu_start_time = time.perf_counter()
+
+				# 2. Measure GPU Time
+				if torch.cuda.is_available():
+					start_event.record()
+
+				# THIS IS THE LINE WE ARE TIMING
 				action = agent.act(obs, t0=t==0, eval_mode=True, task=task_idx)
+				
+				if torch.cuda.is_available():
+					end_event.record()
+					# Synchronize to wait for the GPU operations to complete
+					torch.cuda.synchronize()
+					# elapsed_time returns time in milliseconds, convert to seconds
+					total_gpu_time += start_event.elapsed_time(end_event) / 1000.0
+
+				cpu_end_time = time.perf_counter()
+				total_cpu_time += (cpu_end_time - cpu_start_time)
+				total_actions += 1
+
+				# --- End of Timing Modifications ---
+
 				obs, reward, done, info = env.step(action)
 				ep_reward += reward
 				t += 1
 				if cfg.save_video:
 					frames.append(env.render())
-				print(f"obs = {obs}")
-				print(f"reward = {reward}")
+				# print(f"obs = {obs}")
+				# print(f"reward = {reward}")
 			ep_rewards.append(ep_reward)
 			ep_successes.append(info['success'])
 			if cfg.save_video:
@@ -99,6 +139,27 @@ def evaluate(cfg: dict):
 			f'\tS: {ep_successes:.02f}', 'yellow'))
 	if cfg.multitask:
 		print(colored(f'Normalized score: {np.mean(scores):.02f}', 'yellow', attrs=['bold']))
+
+	# --- Start of Timing Modifications ---
+	
+	# 4. Report the timing results at the end
+	print(colored('--- Timing Results ---', 'cyan', attrs=['bold']))
+	print(colored(f'Total Actions Timed: {total_actions}', 'cyan'))
+	
+	# CPU Timing Report
+	avg_cpu_time_per_action = total_cpu_time / total_actions if total_actions > 0 else 0
+	print(colored(f'CPU Time:', 'cyan'))
+	print(colored(f'  - Total: {total_cpu_time:.3f} seconds', 'cyan'))
+	print(colored(f'  - Average per action: {avg_cpu_time_per_action*1000:.2f} ms', 'cyan'))
+	
+	# GPU Timing Report
+	if torch.cuda.is_available() and total_actions > 0:
+		avg_gpu_time_per_action = total_gpu_time / total_actions
+		print(colored(f'GPU Time:', 'cyan'))
+		print(colored(f'  - Total: {total_gpu_time:.3f} seconds', 'cyan'))
+		print(colored(f'  - Average per action: {avg_gpu_time_per_action*1000:.2f} ms', 'cyan'))
+
+	# --- End of Timing Modifications ---
 
 
 if __name__ == '__main__':

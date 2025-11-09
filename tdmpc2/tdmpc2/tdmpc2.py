@@ -7,6 +7,7 @@ from common.world_model import WorldModel
 from common.layers import api_model_conversion
 from tensordict import TensorDict
 import numpy as np
+from cache_mpc.trajCache import find_matching_action, find_matching_action_with_threshold, can_reuse, store_trajectory
 
 
 class TDMPC2(torch.nn.Module):
@@ -43,8 +44,32 @@ class TDMPC2(torch.nn.Module):
 		self._prev_mean = torch.nn.Buffer(torch.zeros(self.cfg.horizon, self.cfg.action_dim, device=self.device))
 		if cfg.compile:
 			print('Compiling update function with torch.compile...')
-			# self._update = torch.compile(self._update, mode="default")
 			self._update = torch.compile(self._update, mode="reduce-overhead")
+
+		# Cache-mpc variable
+		self.store_traj = self.cfg.store_traj
+		self.reuse = self.cfg.reuse
+		self.clock = 0
+		self.trajectory_step = 1 
+		self.reuse_interval = self.cfg.reuse_interval
+		self.matching_fn = None
+		self.trajectory_cache = []
+		self._set_reuse_info()
+
+	def _set_reuse_info(self):
+		"""Set reuse configuration for trajectory caching."""
+		def matching_fn(matching_fn_name):
+			function_map = {
+				"find_matching_action_with_interval": find_matching_action,
+				"find_matching_action_with_threshold": find_matching_action_with_threshold
+			}
+			return function_map.get(matching_fn_name, None)
+
+		# set matching function
+		if not self.reuse:
+			return
+
+		self.matching_fn =  matching_fn(self.cfg.matching_fn_name)
 		
 	@property
 	def plan(self):
@@ -129,6 +154,8 @@ class TDMPC2(torch.nn.Module):
 		"""Estimate value of a trajectory starting at latent state z and executing given actions."""
 		G, discount = 0, 1
 		termination = torch.zeros(self.cfg.num_samples, 1, dtype=torch.float32, device=z.device)
+		state = torch.zeros((self.cfg.horizon + 1, *z.shape), dtype=z.dtype, device=z.device)
+		state[0] = z
 		for t in range(self.cfg.horizon):
 			reward = math.two_hot_inv(self.model.reward(z, actions[t], task), self.cfg)
 			z = self.model.next(z, actions[t], task)
@@ -137,13 +164,14 @@ class TDMPC2(torch.nn.Module):
 			discount = discount * discount_update
 			if self.cfg.episodic:
 				termination = torch.clip(termination + (self.model.termination(z, task) > 0.5).float(), max=1.)
+			state[t + 1] = z
 		action, _ = self.model.pi(z, task)
 		Q_values = self.model.Q(z, action, task, return_type='avg')
 		# print(f"Q_values = {Q_values}")
-		return G + discount * (1-termination) * Q_values
+		return G + discount * (1-termination) * Q_values, state
 
 	@torch.no_grad()
-	def _plan(self, obs, t0=False, eval_mode=False, task=None):
+	def _plan(self, obs, t0=False, eval_mode=False, task=None, time=None):
 		"""
 		Plan a sequence of actions using the learned world model.
 
@@ -159,16 +187,18 @@ class TDMPC2(torch.nn.Module):
 		# Sample policy trajectories
 		z = self.model.encode(obs, task)
 
-		# if eval_mode:
-		# 	V_all_logits = self.model.V(z, task, return_type='all')
-		# 	V_all_values = math.two_hot_inv(V_all_logits, self.cfg)
+		if self.reuse:
+			V_all_logits = self.model.V(z, task, return_type='all')
+			V_all_values = math.two_hot_inv(V_all_logits, self.cfg)
 
-		# 	mean_vs = V_all_values.mean(dim=0).item()
-		# 	std_vs = V_all_values.std(dim=0).item()
+			mean_vs = V_all_values.mean(dim=0).item()
+			std_vs = V_all_values.std(dim=0).item()
 
-		# 	Print the results
-		# 	print(f"Mean of V-values: {mean_vs:.4f}")
-		# 	print(f"Standard Deviation of V-values: {std_vs:.4f}")
+			if (can_reuse(self.cfg.matching_fn_name, self.clock, self.reuse_interval, self.matching_fn, std_vs, self.cfg.v_std_thresh)):
+				a = self.matching_fn(z, self.cfg.task, self.trajectory_cache, self.trajectory_step, self.device)
+				if a is not None:
+					self.clock = 0
+					return a
 
 		if self.cfg.num_pi_trajs > 0:
 			pi_actions = torch.empty(self.cfg.horizon, self.cfg.num_pi_trajs, self.cfg.action_dim, device=self.device)
@@ -200,9 +230,10 @@ class TDMPC2(torch.nn.Module):
 				actions = actions * self.model._action_masks[task]
 
 			# Compute elite actions
-			value = self._estimate_value(z, actions, task).nan_to_num(0)
+			value, state = self._estimate_value(z, actions, task)
+			value = value.nan_to_num(0)
 			elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
-			elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs] # , state[:, elite_idxs]
+			elite_value, elite_actions, elite_states = value[elite_idxs], actions[:, elite_idxs], state[:, elite_idxs]
 
 			# Update parameters
 			max_value = elite_value.max(0).values
@@ -220,8 +251,10 @@ class TDMPC2(torch.nn.Module):
 				std = std * self.model._action_masks[task]
 
 		# store trajectories
-		# if self.reuse:
-		# 	store_trajectory(elite_actions, elite_states, elite_values, time, self.trajectory_cache)
+		if self.reuse:
+			if self.clock >= self.reuse_interval - 1:
+				store_trajectory(elite_actions.permute(1, 0, 2), elite_states.permute(1, 0, 2), elite_value, time, self.trajectory_cache)
+			self.clock += 1
 		# if eval_mode:
 		# 	print(f"elite_value = {elite_value}")
 
@@ -287,12 +320,6 @@ class TDMPC2(torch.nn.Module):
 		td_targets = reward + discount * (1-terminated) * self.model.Q(next_z, action, task, return_type='min', target=True)
 		return td_targets, v_targets
 	
-	# @torch.no_grad()
-	# def _v_target(self, next_z, task):
-	# 	action, _ = self.model.pi(next_z, task)
-	# 	v_targets = self.model.Q(next_z, action, task, return_type='avg', target=True)
-	# 	return v_targets
-	
 	def _update(self, obs, action, reward, terminated, task=None):
 		# Compute targets
 		with torch.no_grad():
@@ -326,35 +353,10 @@ class TDMPC2(torch.nn.Module):
 		reward_loss, q_loss, v_loss = 0, 0, 0
 		for t, (rew_pred_unbind, rew_unbind, td_targets_unbind, qs_unbind, v_targets_unbind, vs_unbind) in enumerate(zip(reward_preds.unbind(0), reward.unbind(0), td_targets.unbind(0), qs.unbind(1), v_targets.unbind(0), vs.unbind(1))):
 			reward_loss = reward_loss + math.soft_ce(rew_pred_unbind, rew_unbind, self.cfg).mean() * self.cfg.rho**t
-			for i, qs_unbind_unbind in enumerate(qs_unbind.unbind(0)):
-				# if i == 0:
-				# 	print(f"qs_unbind_unbind = {qs_unbind_unbind}")
-				# 	print(f"td_targets_unbind = {td_targets_unbind}")
+			for _, qs_unbind_unbind in enumerate(qs_unbind.unbind(0)):
 				q_loss = q_loss + math.soft_ce(qs_unbind_unbind, td_targets_unbind, self.cfg).mean() * self.cfg.rho**t
-			for i, vs_unbind_unbind in enumerate(vs_unbind.unbind(0)):
-				# if i == 0:
-				# 	print(f"v[0] = {math.two_hot_inv(vs_unbind_unbind[0], self.cfg)}")
-				# 	print(f"v_targets_unbind[0][0] = {v_targets_unbind[0]}")
-				# 	print(f"vs_unbind_unbind = {vs_unbind_unbind}")
-				# 	print(f"v_targets_unbind = {v_targets_unbind}")
+			for _, vs_unbind_unbind in enumerate(vs_unbind.unbind(0)):
 				v_loss = v_loss + math.soft_ce(vs_unbind_unbind, v_targets_unbind, self.cfg).mean() * self.cfg.rho**t
-
-		# torch.compiler.cudagraph_mark_step_begin()
-		# with torch.no_grad():
-		# 	v_targets = self._v_target(self, next_z, task)
-
-		# Prediction and Compute losses for vs
-		# v_loss = 0
-		# __zs = zs[1:].clone()
-		# vs = self.model.V(__zs, task, return_type='all')
-		# for t, (v_targets_unbind, vs_unbind) in enumerate(zip(v_targets.unbind(0), vs.unbind(1))):
-		# 	for i, vs_unbind_unbind in enumerate(vs_unbind.unbind(0)):
-				# if i == 0:
-				# 	print(f"v[0] = {math.two_hot_inv(vs_unbind_unbind[0], self.cfg)}")
-				# 	print(f"v_targets_unbind[0][0] = {v_targets_unbind[0]}")
-				# 	print(f"vs_unbind_unbind = {vs_unbind_unbind}")
-				# 	print(f"v_targets_unbind = {v_targets_unbind}")
-				# v_loss = v_loss + math.soft_ce(vs_unbind_unbind, v_targets_unbind, self.cfg).mean() * self.cfg.rho**t
 
 		consistency_loss = consistency_loss / self.cfg.horizon
 		reward_loss = reward_loss / self.cfg.horizon

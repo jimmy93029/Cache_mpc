@@ -91,3 +91,10 @@ action_dims: ???
 episode_lengths: ???
 seed_steps: ???
 bin_size: ???
+
+# cache mpc variables
+store_traj: false
+reuse: false
+v_std_thresh: 0.1
+reuse_interval: 2
+matching_fn_name: find_matching_action_with_interval
