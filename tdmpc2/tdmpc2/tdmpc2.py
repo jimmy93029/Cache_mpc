@@ -7,7 +7,7 @@ from common.world_model import WorldModel
 from common.layers import api_model_conversion
 from tensordict import TensorDict
 import numpy as np
-from cache_mpc.trajCache import find_matching_action, find_matching_action_with_threshold, can_reuse, store_trajectory
+from cache_mpc.trajCache import find_matching_action, find_matching_action_with_threshold, can_reuse, store_trajectory, find_matching_action_vectorized_gpu, store_trajectory_vectorized
 
 
 class TDMPC2(torch.nn.Module):
@@ -61,7 +61,8 @@ class TDMPC2(torch.nn.Module):
 		def matching_fn(matching_fn_name):
 			function_map = {
 				"find_matching_action_with_interval": find_matching_action,
-				"find_matching_action_with_threshold": find_matching_action_with_threshold
+				"find_matching_action_with_threshold": find_matching_action_with_threshold,
+				"find_vectorized_action_with_interval": find_matching_action_vectorized_gpu,
 			}
 			return function_map.get(matching_fn_name, None)
 
@@ -77,8 +78,8 @@ class TDMPC2(torch.nn.Module):
 		if _plan_val is not None:
 			return _plan_val
 		if self.cfg.compile:
-			plan = torch.compile(self._plan, mode="default")
-			# plan = torch.compile(self._plan, mode="reduce-overhead")
+			# plan = torch.compile(self._plan, mode="default")
+			plan = torch.compile(self._plan, mode="reduce-overhead")
 		else:
 			plan = self._plan
 		self._plan_val = plan
@@ -139,11 +140,41 @@ class TDMPC2(torch.nn.Module):
 			torch.Tensor: Action to take in the environment.
 		"""
 		obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
+		z = self.model.encode(obs, task)
 		if task is not None:
 			task = torch.tensor([task], device=self.device)
+
+		# if self.cfg.free_and_based:
+		# 	V_all_logits = self.model.V(z, task, return_type='all')
+		# 	V_all_values = math.two_hot_inv(V_all_logits, self.cfg)
+		# 	std_vs = V_all_values.std(dim=0).item()
+		# 	print(f"std_vs = {std_vs}")
+			
+		# 	if std_vs > self.cfg.vstd_thresh:
+		# 		return self.plan(z, t0=t0, eval_mode=eval_mode, task=task).cpu()
+		# 	else:
+		# 		print(f"threshold reach, so fast plan")
+		# 		action, info = self.model.pi(z, task)
+		# 		action = info["mean"]
+		# 		return action[0].cpu()
+
+		if self.reuse:
+			V_all_logits = self.model.V(z, task, return_type='all')
+			V_all_values = math.two_hot_inv(V_all_logits, self.cfg)
+
+			# mean_vs = V_all_values.mean(dim=0).item()
+			std_vs = V_all_values.std(dim=0).item()
+			# print(f"std_vs = {std_vs}")
+
+			if (can_reuse(self.cfg.matching_fn_name, self.clock, self.reuse_interval, self.matching_fn, std_vs, self.cfg.v_std_thresh)):
+				a = self.matching_fn(z, self.cfg.task, self.trajectory_cache, self.trajectory_step, self.device)
+				if a is not None:
+					self.clock = 0
+					return a.cpu()
+		
 		if self.cfg.mpc:
-			return self.plan(obs, t0=t0, eval_mode=eval_mode, task=task).cpu()
-		z = self.model.encode(obs, task)
+			return self.plan(z, t0=t0, eval_mode=eval_mode, task=task).cpu()
+ 
 		action, info = self.model.pi(z, task)
 		if eval_mode:
 			action = info["mean"]
@@ -171,7 +202,7 @@ class TDMPC2(torch.nn.Module):
 		return G + discount * (1-termination) * Q_values, state
 
 	@torch.no_grad()
-	def _plan(self, obs, t0=False, eval_mode=False, task=None, time=None):
+	def _plan(self, z, t0=False, eval_mode=False, task=None, time=None):
 		"""
 		Plan a sequence of actions using the learned world model.
 
@@ -185,20 +216,7 @@ class TDMPC2(torch.nn.Module):
 			torch.Tensor: Action to take in the environment.
 		"""
 		# Sample policy trajectories
-		z = self.model.encode(obs, task)
-
-		if self.reuse:
-			V_all_logits = self.model.V(z, task, return_type='all')
-			V_all_values = math.two_hot_inv(V_all_logits, self.cfg)
-
-			mean_vs = V_all_values.mean(dim=0).item()
-			std_vs = V_all_values.std(dim=0).item()
-
-			if (can_reuse(self.cfg.matching_fn_name, self.clock, self.reuse_interval, self.matching_fn, std_vs, self.cfg.v_std_thresh)):
-				a = self.matching_fn(z, self.cfg.task, self.trajectory_cache, self.trajectory_step, self.device)
-				if a is not None:
-					self.clock = 0
-					return a
+		# z = self.model.encode(obs, task)
 
 		if self.cfg.num_pi_trajs > 0:
 			pi_actions = torch.empty(self.cfg.horizon, self.cfg.num_pi_trajs, self.cfg.action_dim, device=self.device)
@@ -219,7 +237,8 @@ class TDMPC2(torch.nn.Module):
 			actions[:, :self.cfg.num_pi_trajs] = pi_actions
 
 		# Iterate MPPI
-		for _ in range(self.cfg.iterations):
+		iter = 0
+		while iter < self.cfg.iterations:
 
 			# Sample actions
 			r = torch.randn(self.cfg.horizon, self.cfg.num_samples-self.cfg.num_pi_trajs, self.cfg.action_dim, device=std.device)
@@ -232,28 +251,59 @@ class TDMPC2(torch.nn.Module):
 			# Compute elite actions
 			value, state = self._estimate_value(z, actions, task)
 			value = value.nan_to_num(0)
-			elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
-			elite_value, elite_actions, elite_states = value[elite_idxs], actions[:, elite_idxs], state[:, elite_idxs]
 
-			# Update parameters
-			max_value = elite_value.max(0).values
-			# if eval_mode:
-			# 	advantage = elite_value - mean_vs
-			# 	print(f"advantage = {advantage}")
+			if self.cfg.value_baseline:
 
-			score = torch.exp(self.cfg.temperature*(elite_value - max_value))
-			score = score / score.sum(0)
-			mean = (score.unsqueeze(0) * elite_actions).sum(dim=1) / (score.sum(0) + 1e-9)
-			std = ((score.unsqueeze(0) * (elite_actions - mean.unsqueeze(1)) ** 2).sum(dim=1) / (score.sum(0) + 1e-9)).sqrt()
-			std = std.clamp(self.cfg.min_std, self.cfg.max_std)
-			if self.cfg.multitask:
-				mean = mean * self.model._action_masks[task]
-				std = std * self.model._action_masks[task]
+				elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
+				elite_value, elite_actions, elite_states = value[elite_idxs], actions[:, elite_idxs], state[:, elite_idxs]
+				advantage_mask_on_elites = (elite_value > mean_vs).squeeze(1)
+
+				# 3. CRITICAL: Check if the overlap is non-empty.
+				if torch.any(advantage_mask_on_elites):
+					print(advantage_mask_on_elites.sum())
+					# If the overlap exists, use it to select the final, robust set of elites.
+					# We apply the new mask to our `topk` sets.
+					elite_value = elite_value[advantage_mask_on_elites]
+					elite_actions = elite_actions[:, advantage_mask_on_elites]
+					elite_states = elite_states[:, advantage_mask_on_elites]
+				else:
+					print(f"Warning: No overlap found. Falling back to the top k elites.")
+					# elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
+					# elite_value, elite_actions, elite_states = value[elite_idxs], actions[:, elite_idxs], state[:, elite_idxs]
+
+				max_value = elite_value.max(0).values
+				score = torch.exp(self.cfg.temperature*(elite_value - max_value))
+				score = score / score.sum(0)
+				mean = (score.unsqueeze(0) * elite_actions).sum(dim=1) / (score.sum(0) + 1e-9)
+				new_std = ((score.unsqueeze(0) * (elite_actions - mean.unsqueeze(1)) ** 2).sum(dim=1) / (score.sum(0) + 1e-9)).sqrt()
+				std = new_std.clamp(self.cfg.min_std, self.cfg.max_std)
+
+				if self.cfg.multitask:
+					mean = mean * self.model._action_masks[task]
+					std = std * self.model._action_masks[task]
+			else:
+				elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
+				elite_value, elite_actions, elite_states = value[elite_idxs], actions[:, elite_idxs], state[:, elite_idxs]
+
+				# advantage = (elite_value > mean_vs).squeeze(1)
+				# print(f"non zero = {advantage.sum()}")
+				# Update parameters
+				max_value = elite_value.max(0).values
+
+				score = torch.exp(self.cfg.temperature*(elite_value - max_value))
+				score = score / score.sum(0)
+				mean = (score.unsqueeze(0) * elite_actions).sum(dim=1) / (score.sum(0) + 1e-9)
+				new_std = ((score.unsqueeze(0) * (elite_actions - mean.unsqueeze(1)) ** 2).sum(dim=1) / (score.sum(0) + 1e-9)).sqrt()
+				std = new_std.clamp(self.cfg.min_std, self.cfg.max_std)
+				if self.cfg.multitask:
+					mean = mean * self.model._action_masks[task]
+					std = std * self.model._action_masks[task]
+			iter += 1
 
 		# store trajectories
 		if self.reuse:
-			if self.clock >= self.reuse_interval - 1:
-				store_trajectory(elite_actions.permute(1, 0, 2), elite_states.permute(1, 0, 2), elite_value, time, self.trajectory_cache)
+			# if self.clock >= self.reuse_interval - 1:
+			store_trajectory_vectorized(elite_actions.permute(1, 0, 2), elite_states.permute(1, 0, 2), elite_value, time, self.trajectory_cache)
 			self.clock += 1
 		# if eval_mode:
 		# 	print(f"elite_value = {elite_value}")

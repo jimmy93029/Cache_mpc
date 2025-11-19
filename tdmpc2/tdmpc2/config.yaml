@@ -98,3 +98,10 @@ reuse: false
 v_std_thresh: 0.1
 reuse_interval: 2
 matching_fn_name: find_matching_action_with_interval
+
+# advantage mpc 
+value_baseline: false
+
+# model free + model based MPC
+vstd_thresh: 0.2
+free_and_based: false

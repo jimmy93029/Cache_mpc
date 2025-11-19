@@ -3,6 +3,7 @@ import re
 import numpy as np
 import pandas as pd
 import torch
+import torch.linalg
 
 
 def natural_sort_key(s):
@@ -139,14 +140,13 @@ def store_trajectory(actions, states, values, time, trajectory_cache):
     
     for i in range(num_store):
         traj_data = {
-            'actions': actions[:, i].cpu().numpy(),  # [horizon, action_dim]
-            'states': states[i].cpu().numpy(),  # [horizon+1, state_dim]
-            'value': values[i].item(),
+            'actions': actions[:, i].detach(),  # 保持為 Tensor (GPU)
+            'states': states[i].detach(),      # 保持為 Tensor (GPU)
+            'value': values[i],         # 'value' 可能仍需 .item() 
             'time': time,
-            'initial_state': states[i][0].cpu().numpy(),  # Store initial state for quick access
-            'trajectory_id': i  # Store original trajectory ID
+            'initial_state': states[i][0].detach(), # 保持為 Tensor (GPU)
+            'trajectory_id': i
         }
-        
         trajectory_cache.append(traj_data)
 
 
@@ -273,20 +273,82 @@ def find_matching_action(current_state, env_type, trajectory_cache, step_in_traj
         if step_in_trajectory < len(best_match['actions']):
             action = torch.tensor(best_match['actions'][step_in_trajectory], 
                                 dtype=torch.float32, device=device)
-            print(f"选择轨迹 #{best_traj_idx}, "
-                  f"距离: {min_distance:.4f}")
+            # print(f"选择轨迹 #{best_traj_idx}, "
+            #       f"距离: {min_distance:.4f}")
             trajectory_cache.clear()
             return action
     
     return None
 
 
+def store_trajectory_vectorized(actions, states, values, time, trajectory_cache):
+    """Stores elite trajectories (Actions:[E, H, A], States:[E, H+1, D]) and converts Values from [E, 1] to [E]."""
+    trajectory_cache.clear()
+    
+    # E = num_trajectories
+    num_trajectories = actions.shape[0] 
+    
+    batched_traj_data = {
+        'actions': actions.detach(),               # [E, H, A]
+        'states': states.detach(),                 # [E, H+1, D]
+        'values': values.squeeze(1).detach(),      # [E]  <-- Squeeze from [E, 1]
+        'time': time,                              # Python int
+        'initial_states': states[:, 0].detach(),   # [E, D]
+        'num_trajectories': num_trajectories
+    }
+    
+    trajectory_cache.append(batched_traj_data)
+
+    
+def find_matching_action_vectorized_gpu(current_state, 
+                                        env_type, 
+                                        trajectory_cache, 
+                                        step_in_trajectory,
+                                        device):
+    """Finds best action by L2-matching state [D] in batch [E, D] and correctly indexes action [E, H, A] as [E_idx, H_idx]."""
+    if not trajectory_cache:
+        return None
+    
+    batched_traj = trajectory_cache[0]
+
+    # --- 1. Data Extraction and Validation ---
+    current_state = current_state.squeeze() # [D]
+    
+    try:
+        # Extract states at the current step: [E, H+1, D] -> [E, D]
+        all_cached_states = batched_traj['states'][:, step_in_trajectory]
+        
+        # Actions shape: [E, H, A]. Check step_in_trajectory index against H (dim 1)
+        _ = batched_traj['actions'][:, step_in_trajectory] 
+    except IndexError:
+        return None
+
+    # --- 2. Vectorized L2 Distance Calculation on GPU ---
+    diff = all_cached_states - current_state 
+    distances = torch.linalg.norm(diff, dim=1) # [E]
+    
+    # --- 3. Find Minimum Distance ---
+    min_distance, min_traj_idx = torch.min(distances, dim=0) 
+    
+    # --- 4. Extract Best Action and Cleanup ---
+
+    # Actions shape: [E, H, A]. Correct indexing: [trajectory_index, step_index]
+    best_action = batched_traj['actions'][min_traj_idx, step_in_trajectory] 
+    # print(f"Match found in trajectory #{min_traj_idx.item()}. Distance: {min_distance.item():.4f}")
+    trajectory_cache.clear()
+    
+    return best_action
+
+
 def can_reuse(mathcing_fn_name, clock, reuse_interval, matching_fn, v_std, v_std_thresh):
     function_map = {
         "find_matching_action_with_interval": clock >= reuse_interval 
-        and matching_fn is not None and v_std < v_std_thresh,
+             and matching_fn is not None and v_std < v_std_thresh,
         "find_matching_action_with_threshold": clock >= reuse_interval 
-        and matching_fn is not None  and v_std < v_std_thresh
+            and matching_fn is not None  and v_std < v_std_thresh,
+        "find_vectorized_action_with_interval": clock >= reuse_interval
+            and matching_fn is not None  and v_std < v_std_thresh,
     }
+
     return function_map.get(mathcing_fn_name, False)
     
