@@ -75,7 +75,6 @@ class TDMPC():
 		self.matching_fn = None
 		self.trajectory_cache = []
 		self.guide_cache = None
-
 		self._set_reuse_info()
 
 	def _set_reuse_info(self):
@@ -132,23 +131,26 @@ class TDMPC():
 	@torch.no_grad()
 	def plan(self, obs, eval_mode=False, step=None, t0=True, time=None, test_dir=None):
 		"""
-		Plan next action using TD-MPC inference.
-		obs: raw input observation.
-		eval_mode: uniform sampling and action noise is disabled during evaluation.
-		step: current time step. determines e.g. planning horizon.
-		t0: whether current step is the first step of an episode.
+		Plan next action using TD-MPC inference with detailed timing.
 		"""
 		# Seed steps
 		if step < self.cfg.seed_steps and not eval_mode:
 			return torch.empty(self.cfg.action_dim, dtype=torch.float32, device=self.device).uniform_(-1, 1)
 
-		# Reuse Traj
+		# Encode observation
 		obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
 		current_state = self.model.h(obs)
-		if (can_reuse(self.cfg.matching_fn, self.reuse, len(self.trajectory_cache), time, self.reuse_interval, 
-			self.matching_fn, self.guide_cache, current_state, self.cfg.v_thresh, self.cfg.var_thresh)):
-			a = self.matching_fn(current_state, self.cfg.task, self.trajectory_cache, 
-			 					self.trajectory_step, self.device)
+		
+		# Check reuse
+		can_reuse_result = can_reuse(
+			self.cfg.matching_fn, self.reuse, len(self.trajectory_cache), 
+			time, self.reuse_interval, self.matching_fn, self.guide_cache, 
+			current_state, self.cfg.v_thresh, self.cfg.var_thresh
+		)
+		
+		if can_reuse_result:
+			a = self.matching_fn(self.cfg, current_state, self.cfg.task, self.trajectory_cache, 
+								self.trajectory_step, self.device)
 			if a is not None:
 				return a
 
@@ -171,6 +173,7 @@ class TDMPC():
 
 		# Iterate CEM
 		for i in range(self.cfg.iterations):
+			# Sample actions
 			actions = torch.clamp(mean.unsqueeze(1) + std.unsqueeze(1) * \
 				torch.randn(horizon, self.cfg.num_samples, self.cfg.action_dim, device=std.device), -1, 1)
 			if num_pi_trajs > 0:
@@ -178,18 +181,16 @@ class TDMPC():
 
 			# Compute elite actions
 			values, states = self.estimate_value(z, actions, horizon)
+			
 			values = values.nan_to_num_(0)
 			elite_idxs = torch.topk(values.squeeze(1), self.cfg.num_elites, dim=0).indices
 			elite_values, elite_actions = values[elite_idxs], actions[:, elite_idxs]
 			
-			# Extract elite states correctly
+			# Extract elite states
 			elite_states = []
-			for t in range(len(states)):  # for each time step
-				# 选择对应时间步的精英轨迹，elite_idxs 选取精英轨迹 
+			for t in range(len(states)):
 				elite_states.append(states[t][elite_idxs])
-
-			# 转换成 [num_trajectories, horizon] 的格式
-			elite_states = torch.stack(elite_states, dim=1)  # [num_trajectories, horizon, state_dim]
+			elite_states = torch.stack(elite_states, dim=1)
 
 			# Update parameters
 			max_value = elite_values.max(0)[0]
@@ -200,13 +201,13 @@ class TDMPC():
 			_std = _std.clamp_(self.std, 2)
 			mean, std = self.cfg.momentum * mean + (1 - self.cfg.momentum) * _mean, _std
 
-		# Save planned actions for Cache MPC analysis
+		# Save trajectories
 		if self.store_traj and test_dir is not None and time is not None:
 			save_planned_actions(self.cfg, elite_actions, elite_values, score, time, horizon, test_dir)
 			save_planned_states(self.cfg, elite_states, elite_values, score, time, horizon, test_dir)
 		if self.reuse:
 			store_trajectory(elite_actions, elite_states, elite_values, time, self.trajectory_cache)
-			
+		
 		# Outputs
 		score = score.squeeze(1).cpu().numpy()
 		actions = elite_actions[:, np.random.choice(np.arange(score.shape[0]), p=score)]
@@ -216,6 +217,7 @@ class TDMPC():
 		if not eval_mode:
 			a += std * torch.randn(self.cfg.action_dim, device=std.device)
 		return a
+
 
 	def update_pi(self, zs):
 		"""Update policy using a sequence of latent states."""

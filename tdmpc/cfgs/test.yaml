@@ -2,4 +2,14 @@ store_traj: False
 reuse: False
 reuse_interval: 2
 matching_fn: find_matching_action_with_interval
-test_seed: 1
+index_type: LSH
+v_thresh: 0.4
+var_thresh: 0.5
+
+# threshold
+cartpole_thresh: 5     # 4D state space
+acrobot_thresh: 5      # 6D state space
+humanoid_thresh: 150    # 108D state space, stricter
+walker_thresh: 15      # 17D state space
+cheetah_thresh: 25     # 17D state space
+dog_thresh: 5         # High-dimensional state space

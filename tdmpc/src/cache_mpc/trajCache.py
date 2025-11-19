@@ -150,7 +150,7 @@ def store_trajectory(actions, states, values, time, trajectory_cache):
         trajectory_cache.append(traj_data)
 
 
-def find_matching_action_with_threshold(current_state, env_type, trajectory_cache, step_in_trajectory, device):
+def find_matching_action_with_threshold(cfg, current_state, env_type, trajectory_cache, step_in_trajectory, device):
     """
     Find the matching action from cached trajectories for the current state.
     Uses an adaptive threshold based on environment type and state dimension.
@@ -178,18 +178,12 @@ def find_matching_action_with_threshold(current_state, env_type, trajectory_cach
         env_base = env_type.split('-')[0] if '-' in env_type else env_type
         
         base_thresholds = {
-            'cartpole': 5,     # 4D state space
-            'acrobot': 5,      # 6D state space
-            'humanoid': 150,    # 108D state space, stricter
-            'walker': 15,      # 17D state space
-            'cheetah': 25,     # 17D state space
-            'cup': 5,          # 8D state space
-            'dog': 5,         # High-dimensional state space
-            'finger': 5,       # 9D state space
-            'fish': 5,        # 24D state space
-            'hopper': 5,      # 15D state space
-            'quadruped': 5,   # High-dimensional state space
-            'reacher': 5,      # 4-6D state space
+            'cartpole': cfg.cartpole_thresh,     # 4D state space
+            'acrobot': cfg.acrobot_thresh,      # 6D state space
+            'humanoid': cfg.humanoid_thresh,    # 108D state space, stricter
+            'walker': cfg.walker_thresh,      # 17D state space
+            'cheetah': cfg.cheetah_thresh,     # 17D state space
+            'dog': cfg.dog_thresh,         # High-dimensional state space
         }
         
         # Base threshold
@@ -234,7 +228,7 @@ def find_matching_action_with_threshold(current_state, env_type, trajectory_cach
     return None
 
 
-def find_matching_action(current_state, env_type, trajectory_cache, step_in_trajectory, device):
+def find_matching_action(cfg, current_state, env_type, trajectory_cache, step_in_trajectory, device):
     """
     Find the matching action from cached trajectories for the current state (without threshold).
     
@@ -292,4 +286,5 @@ def can_reuse(mathcing_fn_name, reuse, length, time, reuse_interval, matching_fn
 			and time > 0 and guide_cache is not None and guide_cache.query(embed_state, v_thresh, var_thresh)
     }
     return function_map.get(mathcing_fn_name, False)
+
     

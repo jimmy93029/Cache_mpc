@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 os.environ['MUJOCO_GL'] = 'egl'
 import torch
-torch.cuda.set_device(2)
+torch.cuda.set_device(1)
 print(f"Currently using device: {torch.cuda.current_device()}")
 print(f"Device name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
 from gym.wrappers import RecordVideo
@@ -19,6 +19,7 @@ from pathlib import Path
 from src.cfg import parse_cfg
 from src.env import make_env
 from src.algorithm.tdmpc import TDMPC
+from src.algorithm.tdmpc_mppi import TDMPC_MPPI
 
 
 torch.backends.cudnn.benchmark = True
@@ -26,11 +27,16 @@ __CONFIG__, __LOGS__, __TEST__ = 'cfgs', 'logs', 'tests'
 
 
 def create_test_directory(cfg):
-    # Define the base test directory
-    test_dir = Path().cwd() / __TEST__ / cfg.task / str(cfg.test_seed) / cfg.exp_name
+    """a                                 
+    Creates the test directory with the structure:
+    tests/{task}/{exp_name}/{test_seed}/
+    """
+    # --- MODIFIED LINE ---
+    # The directory structure is now grouped by experiment name first.
+    test_dir = Path().cwd() / __TEST__ / cfg.task / cfg.exp_name / str(cfg.test_seed)
     
     test_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Test directory: {test_dir}")
+    print(f"Test directory created: {test_dir}")
     
     return test_dir
 
@@ -51,7 +57,6 @@ def test_agent(env, agent, num_episodes, step, test_dir):
     video_dir = test_dir / "videos"
     video_dir.mkdir(exist_ok=True)
 
-    # env.metadata
     if not hasattr(env, 'metadata') or env.metadata is None:
         env.metadata = {'render.modes': ['human', 'rgb_array']}
     
@@ -59,49 +64,38 @@ def test_agent(env, agent, num_episodes, step, test_dir):
         print(f"Testing episode {episode_idx + 1}/{num_episodes}")
         obs, done, ep_reward, t = env.reset(), False, 0, 0
         
-        # Record video
         video_path = video_dir / f"episode_{episode_idx + 1}.mp4"
-        video_recorder = VideoRecorder(
-            env, 
-            path=str(video_path),
-            enabled=True
-        )
+        video_recorder = VideoRecorder(env, path=str(video_path), enabled=True)
 
-        # Create episode-specific directory
         episode_dir = test_dir / f"episode_{episode_idx + 1}"
         episode_dir.mkdir(parents=True, exist_ok=True)
         
         while not done:
             video_recorder.capture_frame()
-
-            # Plan action with test mode enabled
             action = agent.plan(
                 obs, 
-                eval_mode=True,      # Use deterministic policy
+                eval_mode=True,
                 step=step, 
                 t0=(t == 0),
-                time=t,                 # Current time step
-                test_dir=episode_dir,  # Directory to save CSV files
+                time=t,
+                test_dir=episode_dir,
             )
             
-            # Execute action in environment
             obs, reward, done, _ = env.step(action.cpu().numpy())
             ep_reward += reward
             t += 1
             
-            if t % 10 == 0:  # Print progress every 10 steps
+            if t % 10 == 0:
                 print(f"  Step {t}, reward so far: {ep_reward:.2f}")
         
-        # close the video
         video_recorder.close()
         episode_rewards.append(ep_reward)
         print(f"Episode {episode_idx + 1} completed with reward: {ep_reward:.2f}")
         print(f"Video saved to: {video_path}")
     
     avg_reward = np.nanmean(episode_rewards)
-    print(f"\nTest completed!")
+    print(f"\nTest for seed completed!")
     print(f"Average reward over {num_episodes} episodes: {avg_reward:.2f}")
-    print(f"Test data saved to: {test_dir}")
     
     return avg_reward, episode_rewards
 
@@ -120,31 +114,35 @@ def load_trained_agent(cfg, model_path):
     return agent
 
 
-def main():
-    """Main testing function."""
-    # Parse configuration
-    cfg = parse_cfg(Path().cwd() / __CONFIG__)
-    
-    # Create test directory structure
+def run_test_for_seed(cfg, seed):
+    """
+    Runs a complete test for a single given seed.
+    This function encapsulates the logic from the original main().
+    """
+    print(f"\n{'='*60}\nRunning test for seed: {seed}\n{'='*60}")
+
+    # 1. Override the config's test_seed with the one for this run
+    cfg.test_seed = seed
+
+    # 2. Create seed-specific directory and set the seed
     test_dir = create_test_directory(cfg)
     set_seed(cfg.test_seed)
 
-    # Create environment
+    # 3. Create environment
     env = make_env(cfg)
     
-    # Load trained agent
-    # Adjust this path to where your trained model is saved
+    # 4. Load the *same* trained agent for each test run
     model_path = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / str(cfg.seed) / 'models' / 'model.pt'
     agent = load_trained_agent(cfg, model_path)
     
     # Test configuration
-    num_test_episodes = getattr(cfg, 'test_episodes', 5)  # Default to 5 episodes if not specified
-    test_step = cfg.train_steps  # Use final training step for consistency
+    num_test_episodes = getattr(cfg, 'test_episodes', 5)
+    test_step = cfg.train_steps
     
     print(f"Starting test with {num_test_episodes} episodes...")
     print(f"Task: {cfg.task}")
     print(f"Experiment: {cfg.exp_name}")
-    print(f"Seed: {cfg.test_seed}")
+    print(f"Test Seed: {cfg.test_seed}")
     
     # Run test
     start_time = time.time()
@@ -157,14 +155,14 @@ def main():
     )
     test_time = time.time() - start_time
 
-    # Save test summary
+    # Save test summary for this specific seed
     summary_file = test_dir / 'test_summary.txt'
     with open(summary_file, 'w') as f:
-        f.write(f"Test Summary\n")
+        f.write(f"Test Summary for Seed: {seed}\n")
         f.write(f"============\n")
         f.write(f"Task: {cfg.task}\n")
         f.write(f"Experiment: {cfg.exp_name}\n")
-        f.write(f"Seed: {cfg.seed}\n")
+        f.write(f"Training Seed (of model): {cfg.seed}\n")
         f.write(f"Model path: {model_path}\n")
         f.write(f"Number of episodes: {num_test_episodes}\n")
         f.write(f"store_traj: {cfg.store_traj}\n")
@@ -178,8 +176,43 @@ def main():
         f.write(f"Min reward: {np.min(episode_rewards):.2f}\n")
         f.write(f"Max reward: {np.max(episode_rewards):.2f}\n")
     
-    print(f"Test summary saved to: {summary_file}")
-    print("Testing completed successfully!")
+    print(f"Test summary for seed {seed} saved to: {summary_file}")
+    
+    # Return the average reward for final summary
+    return avg_reward, test_time
+
+
+def main():
+    """Main testing function to loop over multiple seeds."""
+    # Parse the base configuration once
+    cfg = parse_cfg(Path().cwd() / __CONFIG__)
+    
+    # Define the list of seeds you want to test over
+    test_seeds = [1, 2, 3, 4, 5]
+    all_rewards = {}
+    all_times = {}
+
+    for seed in test_seeds:
+        avg_reward, test_time = run_test_for_seed(cfg, seed)
+        all_rewards[seed] = avg_reward
+        all_times[seed] = test_time
+    
+    # Print a final summary of all runs
+    print(f"\n\n{'='*60}\nOverall Test Summary\n{'='*60}")
+    print(f"Task: {cfg.task}")
+    print(f"Experiment: {cfg.exp_name}")
+    print(f"Tested seeds: {test_seeds}")
+    print("-" * 60)
+    for seed, reward in all_rewards.items():
+        print(f"  - Seed {seed}: Average Reward = {reward:.2f}: test time = {all_times[seed]:.2f}")
+    
+    rewards = list(all_rewards.values())
+    times = list(all_times.values())
+    print("-" * 60)
+    print(f"Mean reward over all seeds: {np.mean(rewards):.2f}")
+    print(f"Std dev over all seeds: {np.std(rewards):.2f}")
+    print(f"Elapsed time over all seeds: {np.mean(times)}")
+    print("\nTesting completed successfully for all seeds!")
 
 
 if __name__ == '__main__':
